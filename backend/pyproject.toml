@@ -18,6 +18,5 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = [
-    "ignore::DeprecationWarning",
     "ignore:Using `httpx` with `starlette.testclient`",
 ]
