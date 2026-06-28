@@ -2,6 +2,15 @@ import pytest
 from app.config import get_settings
 
 
+@pytest.fixture(autouse=True)
+def isolate_from_dotenv(monkeypatch, tmp_path):
+    """Change cwd to a temp dir so pydantic-settings cannot find backend/.env."""
+    monkeypatch.chdir(tmp_path)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 def test_loads_key_and_model_from_env(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
     monkeypatch.setenv("ANTHROPIC_MODEL", "claude-opus-4-5")
