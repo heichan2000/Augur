@@ -25,6 +25,35 @@ A developer-docs AI assistant built over the **FastAPI documentation** corpus â€
 
 Full specifications for every phase live in [`Augur-all-phases.md`](./Augur-all-phases.md).
 
+## Local development
+
+**Prerequisites:** Python 3.12+ with [uv](https://docs.astral.sh/uv/), and Node 20+ with npm.
+
+### Backend (FastAPI)
+
+```bash
+cd backend
+cp .env.example .env          # then set ANTHROPIC_API_KEY in .env
+uv sync                       # install dependencies
+uv run uvicorn app.main:app --reload
+```
+
+The API serves a health check at `http://localhost:8000/health`. Run the tests with:
+
+```bash
+uv run pytest
+```
+
+### Frontend (Next.js)
+
+```bash
+cd frontend
+npm install
+npm run dev                   # http://localhost:3000
+```
+
+The frontend is currently a placeholder; the streaming chat UI arrives later in Phase 1.
+
 ## Status
 
 ðŸš§ Phase 1 in progress.
