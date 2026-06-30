@@ -82,7 +82,7 @@ async def run_turn(
             # or make another provider call.
             break
 
-        tool_results = []
+        tool_results: list[dict[str, Any]] = []
         for tool_use in tool_uses:
             result = await registry.dispatch(tool_use.name, tool_use.input)
             tool_results.append(

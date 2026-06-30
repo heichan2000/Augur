@@ -144,6 +144,96 @@ async def test_single_tool_round_trip_dispatches_and_reinvokes_provider():
 
 
 # ---------------------------------------------------------------------------
+# Test 2b: Parallel tool-use (multiple tool_use blocks in one step)
+# ---------------------------------------------------------------------------
+
+
+async def test_parallel_tool_use_dispatches_both_and_aggregates_one_user_message():
+    received_inputs = []
+
+    async def echo_handler(tool_input: dict) -> str:
+        received_inputs.append(("echo", tool_input))
+        return "echo-result"
+
+    async def shout_handler(tool_input: dict) -> str:
+        received_inputs.append(("shout", tool_input))
+        return "shout-result"
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="echo",
+            description="Echoes the input back.",
+            input_schema={"type": "object", "properties": {}},
+            handler=echo_handler,
+        )
+    )
+    registry.register(
+        Tool(
+            name="shout",
+            description="Shouts the input back.",
+            input_schema={"type": "object", "properties": {}},
+            handler=shout_handler,
+        )
+    )
+
+    provider = FakeProvider(
+        [
+            [
+                ToolUseRequested(id="t1", name="echo", input={"v": 1}),
+                ToolUseRequested(id="t2", name="shout", input={"v": 2}),
+                TurnComplete(stop_reason="tool_use", input_tokens=5, output_tokens=4),
+            ],
+            [
+                TextDelta("done"),
+                TurnComplete(stop_reason="end_turn", input_tokens=6, output_tokens=2),
+            ],
+        ]
+    )
+    messages = [{"role": "user", "content": "use both tools"}]
+
+    events = [event async for event in run_turn(provider=provider, registry=registry, messages=messages)]
+
+    # Both handlers dispatched, in arrival order, with their own inputs.
+    assert received_inputs == [("echo", {"v": 1}), ("shout", {"v": 2})]
+    assert len(provider.received_calls) == 2
+
+    assert messages == [
+        {"role": "user", "content": "use both tools"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "t1", "name": "echo", "input": {"v": 1}},
+                {"type": "tool_use", "id": "t2", "name": "shout", "input": {"v": 2}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "echo-result"},
+                {"type": "tool_result", "tool_use_id": "t2", "content": "shout-result"},
+            ],
+        },
+        {"role": "assistant", "content": [{"type": "text", "text": "done"}]},
+    ]
+
+    # Exactly one user message carries the tool_result blocks (not two).
+    tool_result_user_messages = [
+        m
+        for m in messages
+        if m["role"] == "user"
+        and isinstance(m["content"], list)
+        and any(block.get("type") == "tool_result" for block in m["content"])
+    ]
+    assert len(tool_result_user_messages) == 1
+    assert len(tool_result_user_messages[0]["content"]) == 2
+
+    final = events[-1]
+    assert isinstance(final, TurnComplete)
+    assert final.stop_reason == "end_turn"
+
+
+# ---------------------------------------------------------------------------
 # Test 3: Tool schemas forwarded
 # ---------------------------------------------------------------------------
 
