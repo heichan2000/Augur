@@ -5,6 +5,7 @@ injected via the constructor so tests can pass a fake.
 """
 from __future__ import annotations
 
+import functools
 import json
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
@@ -136,3 +137,13 @@ def build_provider() -> AnthropicProvider:
     settings = get_settings()
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     return AnthropicProvider(client=client, model=settings.anthropic_model)
+
+
+@functools.lru_cache(maxsize=1)
+def get_provider() -> AnthropicProvider:
+    """Return the process-wide singleton AnthropicProvider.
+
+    FastAPI dependency — tests override this via ``app.dependency_overrides``
+    so the real Anthropic client is never constructed.
+    """
+    return build_provider()
