@@ -18,6 +18,12 @@ appended message is an assistant ``tool_use`` block with no matching
 ``tool_result``. Persisting that message would leave the stored history in
 a state that is not a valid replay sequence. This requires 8 tool rounds
 in a single turn and is out of scope for #4.
+
+Atomicity note: the persistence loop below assumes ``store.append`` cannot
+fail, which holds for the Phase-1 in-memory store. A persistent (Phase-2)
+store whose ``append`` can raise mid-loop would need this revisited — a
+failure partway through would leave a partial turn persisted while the
+exception escapes the generator uncaught.
 """
 from __future__ import annotations
 

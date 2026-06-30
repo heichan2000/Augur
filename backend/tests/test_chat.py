@@ -174,6 +174,25 @@ async def test_tool_path_yields_tool_use_then_token_then_done():
     ]
     assert received_input == {"v": 1}
 
+    # The persisted history must be the full, valid replay sequence for the
+    # multi-step tool turn — not just a simple user+assistant pair. This
+    # locks in that stream_chat persists the intermediate assistant
+    # tool_use message and the user tool_result message produced by
+    # run_turn (app/agent.py), in addition to the final assistant text.
+    history = await store.get_history("s1")
+    assert history == [
+        {"role": "user", "content": "use the tool"},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "t1", "name": "echo", "input": {"v": 1}}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "echo-result"}],
+        },
+        {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+    ]
+
 
 # ---------------------------------------------------------------------------
 # Behavior 4: Persist + multi-turn
