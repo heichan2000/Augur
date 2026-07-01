@@ -11,6 +11,7 @@ Phase scope (future concerns, not implemented here):
 """
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -62,3 +63,13 @@ class ToolRegistry:
         """
         tool = self._tools[name]
         return await tool.handler(tool_input)
+
+
+@functools.lru_cache(maxsize=1)
+def get_registry() -> ToolRegistry:
+    """Return the process-wide singleton ToolRegistry.
+
+    Empty for now — a later piece (#7) registers concrete tools here.
+    FastAPI dependency — tests override this via ``app.dependency_overrides``.
+    """
+    return ToolRegistry()
