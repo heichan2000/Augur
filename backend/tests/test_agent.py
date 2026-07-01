@@ -4,11 +4,13 @@ Uses a FAKE provider (scripted ProviderEvent lists, one list per
 stream_turn call) and a real ToolRegistry with simple async handlers.
 All test functions are async (asyncio_mode = "auto" handles the event loop).
 """
+from datetime import datetime, timedelta
+
 import pytest
 
 from app.agent import run_turn
 from app.provider import TextDelta, ToolUseRequested, TurnComplete
-from app.tools import Tool, ToolRegistry
+from app.tools import Tool, ToolRegistry, get_registry
 
 
 # ---------------------------------------------------------------------------
@@ -356,3 +358,55 @@ async def test_token_totals_summed_across_steps():
     assert isinstance(final, TurnComplete)
     assert final.input_tokens == 17
     assert final.output_tokens == 8
+
+
+# ---------------------------------------------------------------------------
+# Test 7: end-to-end through the spine with the REAL get_current_time tool
+# ---------------------------------------------------------------------------
+
+
+async def test_get_current_time_runs_end_to_end_through_the_spine():
+    get_registry.cache_clear()
+    registry = get_registry()
+
+    provider = FakeProvider(
+        [
+            [
+                ToolUseRequested(id="tt1", name="get_current_time", input={}),
+                TurnComplete(stop_reason="tool_use", input_tokens=5, output_tokens=4),
+            ],
+            [
+                TextDelta("The time is ..."),
+                TurnComplete(stop_reason="end_turn", input_tokens=6, output_tokens=2),
+            ],
+        ]
+    )
+    messages = [{"role": "user", "content": "what time is it?"}]
+
+    events = [
+        event
+        async for event in run_turn(provider=provider, registry=registry, messages=messages)
+    ]
+
+    assert len(provider.received_calls) == 2
+
+    tool_result_messages = [
+        m
+        for m in messages
+        if m["role"] == "user"
+        and isinstance(m["content"], list)
+        and any(block.get("type") == "tool_result" for block in m["content"])
+    ]
+    assert len(tool_result_messages) == 1
+    tool_result_block = tool_result_messages[0]["content"][0]
+    assert tool_result_block["tool_use_id"] == "tt1"
+
+    result = tool_result_block["content"]
+    assert isinstance(result, str)
+    parsed = datetime.fromisoformat(result)
+    assert parsed.tzinfo is not None
+    assert parsed.utcoffset() == timedelta(0)
+
+    final = events[-1]
+    assert isinstance(final, TurnComplete)
+    assert final.stop_reason == "end_turn"
