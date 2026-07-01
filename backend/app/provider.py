@@ -44,6 +44,19 @@ ProviderEvent = TextDelta | ToolUseRequested | TurnComplete
 
 
 # ---------------------------------------------------------------------------
+# Domain errors
+# ---------------------------------------------------------------------------
+
+
+class ProviderError(Exception):
+    """Base: an upstream provider call failed."""
+
+
+class ProviderRateLimitError(ProviderError):
+    """Upstream provider rate-limited the request."""
+
+
+# ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
 
@@ -79,47 +92,52 @@ class AnthropicProvider:
         # Per-block tracking: index → {"id": str, "name": str, "buf": str}
         tool_blocks: dict[int, dict[str, Any]] = {}
 
-        async with self._client.messages.stream(**kwargs) as stream:
-            async for event in stream:
-                etype = event.type
+        try:
+            async with self._client.messages.stream(**kwargs) as stream:
+                async for event in stream:
+                    etype = event.type
 
-                if etype == "message_start":
-                    input_tokens = event.message.usage.input_tokens
+                    if etype == "message_start":
+                        input_tokens = event.message.usage.input_tokens
 
-                elif etype == "content_block_start":
-                    cb = event.content_block
-                    if cb.type == "tool_use":
-                        tool_blocks[event.index] = {
-                            "id": cb.id,
-                            "name": cb.name,
-                            "buf": "",
-                        }
+                    elif etype == "content_block_start":
+                        cb = event.content_block
+                        if cb.type == "tool_use":
+                            tool_blocks[event.index] = {
+                                "id": cb.id,
+                                "name": cb.name,
+                                "buf": "",
+                            }
 
-                elif etype == "content_block_delta":
-                    delta = event.delta
-                    if delta.type == "text_delta":
-                        yield TextDelta(delta.text)
-                    elif delta.type == "input_json_delta":
-                        if event.index in tool_blocks:
-                            tool_blocks[event.index]["buf"] += delta.partial_json
+                    elif etype == "content_block_delta":
+                        delta = event.delta
+                        if delta.type == "text_delta":
+                            yield TextDelta(delta.text)
+                        elif delta.type == "input_json_delta":
+                            if event.index in tool_blocks:
+                                tool_blocks[event.index]["buf"] += delta.partial_json
 
-                elif etype == "content_block_stop":
-                    idx = event.index
-                    if idx in tool_blocks:
-                        block = tool_blocks.pop(idx)
-                        raw = block["buf"]
-                        parsed = json.loads(raw) if raw else {}
-                        yield ToolUseRequested(
-                            id=block["id"],
-                            name=block["name"],
-                            input=parsed,
-                        )
+                    elif etype == "content_block_stop":
+                        idx = event.index
+                        if idx in tool_blocks:
+                            block = tool_blocks.pop(idx)
+                            raw = block["buf"]
+                            parsed = json.loads(raw) if raw else {}
+                            yield ToolUseRequested(
+                                id=block["id"],
+                                name=block["name"],
+                                input=parsed,
+                            )
 
-                elif etype == "message_delta":
-                    stop_reason = event.delta.stop_reason
-                    output_tokens = event.usage.output_tokens
+                    elif etype == "message_delta":
+                        stop_reason = event.delta.stop_reason
+                        output_tokens = event.usage.output_tokens
 
-                # message_stop — no fields used, intentionally ignored
+                    # message_stop — no fields used, intentionally ignored
+        except anthropic.RateLimitError as exc:
+            raise ProviderRateLimitError(str(exc)) from exc
+        except anthropic.APIError as exc:  # status errors + connection/network
+            raise ProviderError(str(exc)) from exc
 
         yield TurnComplete(
             stop_reason=stop_reason,

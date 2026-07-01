@@ -3,10 +3,15 @@
 All tests use fake Anthropic clients; no network calls are made.
 """
 import types
+
+import anthropic
+import httpx
 import pytest
 
 from app.provider import (
     AnthropicProvider,
+    ProviderError,
+    ProviderRateLimitError,
     TextDelta,
     ToolUseRequested,
     TurnComplete,
@@ -262,3 +267,69 @@ async def test_stream_kwargs_omit_system_and_tools_when_not_provided():
     kwargs = client.messages.last_kwargs
     assert "system" not in kwargs
     assert "tools" not in kwargs
+
+
+# ---------------------------------------------------------------------------
+# Fake client that raises when .stream() is called
+# ---------------------------------------------------------------------------
+
+
+class FakeRaisingMessages:
+    """Raises *exc* the moment .stream() is called (mirrors the real SDK,
+    which raises from opening/iterating the stream context)."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def stream(self, **kwargs):
+        raise self._exc
+
+
+class FakeRaisingClient:
+    def __init__(self, exc: Exception) -> None:
+        self.messages = FakeRaisingMessages(exc)
+
+
+# ---------------------------------------------------------------------------
+# Test 5: Rate-limit maps to ProviderRateLimitError
+# ---------------------------------------------------------------------------
+
+
+async def test_rate_limit_error_maps_to_provider_rate_limit_error():
+    req = httpx.Request("POST", "https://api.anthropic.com")
+    resp = httpx.Response(429, request=req)
+    exc = anthropic.RateLimitError("rate limited", response=resp, body=None)
+    client = FakeRaisingClient(exc)
+    provider = AnthropicProvider(client=client, model=MODEL)
+
+    with pytest.raises(ProviderRateLimitError):
+        [e async for e in provider.stream_turn(messages=[{"role": "user", "content": "hi"}])]
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Other API errors map to ProviderError (not ProviderRateLimitError)
+# ---------------------------------------------------------------------------
+
+
+async def test_api_connection_error_maps_to_provider_error():
+    req = httpx.Request("POST", "https://api.anthropic.com")
+    exc = anthropic.APIConnectionError(message="boom", request=req)
+    client = FakeRaisingClient(exc)
+    provider = AnthropicProvider(client=client, model=MODEL)
+
+    with pytest.raises(ProviderError) as excinfo:
+        [e async for e in provider.stream_turn(messages=[{"role": "user", "content": "hi"}])]
+    assert not isinstance(excinfo.value, ProviderRateLimitError)
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Non-anthropic exceptions propagate unchanged
+# ---------------------------------------------------------------------------
+
+
+async def test_non_anthropic_exception_propagates_unchanged():
+    client = FakeRaisingClient(RuntimeError("bug"))
+    provider = AnthropicProvider(client=client, model=MODEL)
+
+    with pytest.raises(RuntimeError):
+        [e async for e in provider.stream_turn(messages=[{"role": "user", "content": "hi"}])]
