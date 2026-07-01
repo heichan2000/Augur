@@ -31,8 +31,14 @@ from typing import Any, AsyncIterator
 
 from app.agent import run_turn
 from app.conversation import ConversationStore, Message
-from app.observability import log_turn_usage
-from app.provider import TextDelta, ToolUseRequested, TurnComplete
+from app.observability import log_turn_error, log_turn_usage
+from app.provider import (
+    ProviderError,
+    ProviderRateLimitError,
+    TextDelta,
+    ToolUseRequested,
+    TurnComplete,
+)
 from app.sse import DoneEvent, ErrorEvent, ToolUseEvent, TokenEvent, format_sse
 from app.tools import ToolRegistry
 
@@ -52,12 +58,15 @@ async def stream_chat(
     Loads prior history for *session_id*, runs the turn via ``run_turn``,
     and on success persists the turn's new messages before yielding the
     final ``done`` event. On any exception raised while producing the
-    turn, yields a single generic ``error`` event and stops — no `done`,
-    and nothing is persisted.
+    turn, yields a single typed ``error`` event — ``rate_limit`` for
+    ``ProviderRateLimitError``, ``provider_error`` for other
+    ``ProviderError``s, ``internal`` for anything else — and stops: no
+    `done`, and nothing is persisted.
 
     On success, logs one structured token/cost usage record (see
-    ``app.observability``) keyed by *model* before yielding ``done``. The
-    error path does not log usage — no token counts are available there.
+    ``app.observability``) keyed by *model* before yielding ``done``. On
+    error, logs one structured ``log_turn_error`` record instead — no
+    token counts are available there.
     """
     history = await store.get_history(session_id)
     user_msg: Message = {"role": "user", "content": message}
@@ -73,7 +82,26 @@ async def stream_chat(
                 yield format_sse(ToolUseEvent(id=event.id, name=event.name, input=event.input))
             elif isinstance(event, TurnComplete):
                 final_turn = event
+    except ProviderRateLimitError:
+        log_turn_error(session_id=session_id, error_type="rate_limit")
+        yield format_sse(
+            ErrorEvent(
+                type="rate_limit",
+                message="The service is temporarily rate limited. Please retry shortly.",
+            )
+        )
+        return
+    except ProviderError:
+        log_turn_error(session_id=session_id, error_type="provider_error")
+        yield format_sse(
+            ErrorEvent(
+                type="provider_error",
+                message="The upstream model provider returned an error.",
+            )
+        )
+        return
     except Exception:
+        log_turn_error(session_id=session_id, error_type="internal")
         yield format_sse(ErrorEvent(type="internal", message="An internal error occurred."))
         return
 

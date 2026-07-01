@@ -13,7 +13,13 @@ import pytest
 from app.chat import stream_chat
 from app.conversation import InMemoryConversationStore
 from app.observability import compute_cost
-from app.provider import TextDelta, ToolUseRequested, TurnComplete
+from app.provider import (
+    ProviderError,
+    ProviderRateLimitError,
+    TextDelta,
+    ToolUseRequested,
+    TurnComplete,
+)
 from app.tools import Tool, ToolRegistry
 
 
@@ -348,5 +354,113 @@ async def test_errored_turn_does_not_log_usage(caplog):
     events = _parse_sse(chunks)
     assert events == [("error", {"type": "internal", "message": "An internal error occurred."})]
 
-    usage_records = [r for r in caplog.records if r.name == "augur.observability"]
+    # Filter to usage records specifically — the error path now also logs an
+    # "augur.observability" WARNING record (see error-path tests below), so a
+    # bare logger-name filter would no longer correctly assert "no usage log".
+    usage_records = [
+        r for r in caplog.records if r.name == "augur.observability" and r.msg == "turn usage"
+    ]
     assert len(usage_records) == 0
+
+
+# ---------------------------------------------------------------------------
+# Behavior 9: rate-limit error maps to typed "rate_limit" SSE event and logs
+# ---------------------------------------------------------------------------
+
+
+async def test_rate_limit_error_yields_rate_limit_event_and_logs(caplog):
+    provider = FakeProvider([ProviderRateLimitError("rate limited")])
+    registry = ToolRegistry()
+    store = InMemoryConversationStore()
+
+    with caplog.at_level(logging.WARNING, logger="augur.observability"):
+        chunks = [
+            c
+            async for c in stream_chat(
+                provider=provider,
+                registry=registry,
+                store=store,
+                session_id="s1",
+                message="hello",
+                model="claude-sonnet-4-6",
+            )
+        ]
+
+    events = _parse_sse(chunks)
+    assert len(events) == 1
+    event_name, data = events[0]
+    assert event_name == "error"
+    assert data["type"] == "rate_limit"
+    assert data["message"]
+
+    history = await store.get_history("s1")
+    assert history == []
+
+    error_records = [r for r in caplog.records if r.name == "augur.observability"]
+    assert len(error_records) == 1
+    record = error_records[0]
+    assert record.levelno == logging.WARNING
+    assert record.session_id == "s1"
+    assert record.error_type == "rate_limit"
+
+
+# ---------------------------------------------------------------------------
+# Behavior 10: generic ProviderError maps to typed "provider_error" SSE event
+# ---------------------------------------------------------------------------
+
+
+async def test_provider_error_yields_provider_error_event():
+    provider = FakeProvider([ProviderError("upstream broke")])
+    registry = ToolRegistry()
+    store = InMemoryConversationStore()
+
+    chunks = [
+        c
+        async for c in stream_chat(
+            provider=provider,
+            registry=registry,
+            store=store,
+            session_id="s1",
+            message="hello",
+            model="claude-sonnet-4-6",
+        )
+    ]
+
+    events = _parse_sse(chunks)
+    assert len(events) == 1
+    event_name, data = events[0]
+    assert event_name == "error"
+    assert data["type"] == "provider_error"
+    assert data["message"]
+
+    history = await store.get_history("s1")
+    assert history == []
+
+
+# ---------------------------------------------------------------------------
+# Behavior 11: unexpected (non-provider) exception maps to "internal"
+# ---------------------------------------------------------------------------
+
+
+async def test_unexpected_exception_yields_internal_event():
+    provider = FakeProvider([RuntimeError("bug")])
+    registry = ToolRegistry()
+    store = InMemoryConversationStore()
+
+    chunks = [
+        c
+        async for c in stream_chat(
+            provider=provider,
+            registry=registry,
+            store=store,
+            session_id="s1",
+            message="hello",
+            model="claude-sonnet-4-6",
+        )
+    ]
+
+    events = _parse_sse(chunks)
+    assert events == [("error", {"type": "internal", "message": "An internal error occurred."})]
+
+    history = await store.get_history("s1")
+    assert history == []

@@ -69,3 +69,19 @@ def log_turn_usage(
             "cost_usd": cost_usd,
         },
     )
+
+
+def log_turn_error(*, session_id: str, error_type: str) -> None:
+    """Emit one structured WARNING record for a chat turn that failed.
+
+    No message content or traceback text is logged — only the session id and
+    the machine-readable `error_type` (matching the SSE `error` event's
+    `type` field), attached via logging `extra=`.
+    """
+    logger.warning(
+        "turn error",
+        extra={
+            "session_id": session_id,
+            "error_type": error_type,
+        },
+    )
