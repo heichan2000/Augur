@@ -2,9 +2,11 @@
 
 All test functions are async (asyncio_mode = "auto" handles the event loop).
 """
+from datetime import datetime, timedelta
+
 import pytest
 
-from app.tools import Tool, ToolRegistry
+from app.tools import Tool, ToolRegistry, get_registry
 
 
 async def _echo_handler(tool_input: dict) -> str:
@@ -109,3 +111,36 @@ async def test_dispatch_unknown_name_raises_key_error():
 async def test_fresh_registry_schemas_is_empty():
     registry = ToolRegistry()
     assert registry.schemas() == []
+
+
+# ---------------------------------------------------------------------------
+# Test 7: get_registry() singleton exposes the get_current_time tool's schema
+# ---------------------------------------------------------------------------
+
+
+async def test_get_registry_singleton_exposes_get_current_time_schema():
+    get_registry.cache_clear()
+
+    schemas = get_registry().schemas()
+
+    assert len(schemas) == 1
+    assert schemas[0]["name"] == "get_current_time"
+    assert set(schemas[0].keys()) == {"name", "description", "input_schema"}
+    assert schemas[0]["input_schema"] == {"type": "object", "properties": {}}
+
+
+# ---------------------------------------------------------------------------
+# Test 8: the real get_current_time handler returns a parseable UTC ISO-8601
+# string
+# ---------------------------------------------------------------------------
+
+
+async def test_get_current_time_handler_returns_parseable_utc_iso8601():
+    get_registry.cache_clear()
+
+    result = await get_registry().dispatch("get_current_time", {})
+
+    assert isinstance(result, str)
+    parsed = datetime.fromisoformat(result)
+    assert parsed.tzinfo is not None
+    assert parsed.utcoffset() == timedelta(0)

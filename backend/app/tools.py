@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 
@@ -65,11 +66,26 @@ class ToolRegistry:
         return await tool.handler(tool_input)
 
 
+async def _get_current_time(tool_input: dict[str, Any]) -> str:
+    """Return the current UTC date and time as an ISO 8601 string."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+GET_CURRENT_TIME = Tool(
+    name="get_current_time",
+    description="Returns the current UTC date and time in ISO 8601 format.",
+    input_schema={"type": "object", "properties": {}},
+    handler=_get_current_time,
+)
+
+
 @functools.lru_cache(maxsize=1)
 def get_registry() -> ToolRegistry:
     """Return the process-wide singleton ToolRegistry.
 
-    Empty for now — a later piece (#7) registers concrete tools here.
+    Registers the seed ``get_current_time`` tool (#7) before returning.
     FastAPI dependency — tests override this via ``app.dependency_overrides``.
     """
-    return ToolRegistry()
+    registry = ToolRegistry()
+    registry.register(GET_CURRENT_TIME)
+    return registry
