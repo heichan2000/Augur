@@ -34,6 +34,7 @@ def create_app() -> FastAPI:
         provider=Depends(get_provider),
         registry=Depends(get_registry),
         store=Depends(get_conversation_store),
+        settings=Depends(get_settings),
     ):
         return StreamingResponse(
             stream_chat(
@@ -42,6 +43,7 @@ def create_app() -> FastAPI:
                 store=store,
                 session_id=req.session_id,
                 message=req.message,
+                model=settings.anthropic_model,
             ),
             media_type="text/event-stream",
         )

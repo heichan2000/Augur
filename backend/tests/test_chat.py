@@ -6,11 +6,13 @@ InMemoryConversationStore, and a real ToolRegistry with a throwaway
 "echo" test tool. All test functions are async (asyncio_mode = "auto").
 """
 import json
+import logging
 
 import pytest
 
 from app.chat import stream_chat
 from app.conversation import InMemoryConversationStore
+from app.observability import compute_cost
 from app.provider import TextDelta, ToolUseRequested, TurnComplete
 from app.tools import Tool, ToolRegistry
 
@@ -96,7 +98,7 @@ async def test_simple_turn_yields_token_then_done():
     chunks = [
         c
         async for c in stream_chat(
-            provider=provider, registry=registry, store=store, session_id="s1", message="hello"
+            provider=provider, registry=registry, store=store, session_id="s1", message="hello", model="claude-sonnet-4-6"
         )
     ]
 
@@ -125,7 +127,7 @@ async def test_always_ends_in_exactly_one_done():
     chunks = [
         c
         async for c in stream_chat(
-            provider=provider, registry=registry, store=store, session_id="s1", message="hello"
+            provider=provider, registry=registry, store=store, session_id="s1", message="hello", model="claude-sonnet-4-6"
         )
     ]
 
@@ -162,7 +164,7 @@ async def test_tool_path_yields_tool_use_then_token_then_done():
     chunks = [
         c
         async for c in stream_chat(
-            provider=provider, registry=registry, store=store, session_id="s1", message="use the tool"
+            provider=provider, registry=registry, store=store, session_id="s1", message="use the tool", model="claude-sonnet-4-6"
         )
     ]
 
@@ -207,7 +209,7 @@ async def test_persists_turn_and_feeds_history_to_next_call():
     )
 
     async for _ in stream_chat(
-        provider=provider1, registry=registry, store=store, session_id="s1", message="hello"
+        provider=provider1, registry=registry, store=store, session_id="s1", message="hello", model="claude-sonnet-4-6"
     ):
         pass
 
@@ -221,7 +223,7 @@ async def test_persists_turn_and_feeds_history_to_next_call():
         [[TextDelta("again"), TurnComplete(stop_reason="end_turn", input_tokens=1, output_tokens=1)]]
     )
     async for _ in stream_chat(
-        provider=provider2, registry=registry, store=store, session_id="s1", message="second message"
+        provider=provider2, registry=registry, store=store, session_id="s1", message="second message", model="claude-sonnet-4-6"
     ):
         pass
 
@@ -242,7 +244,7 @@ async def test_empty_content_assistant_message_not_persisted():
     chunks = [
         c
         async for c in stream_chat(
-            provider=provider, registry=registry, store=store, session_id="s1", message="hello"
+            provider=provider, registry=registry, store=store, session_id="s1", message="hello", model="claude-sonnet-4-6"
         )
     ]
 
@@ -266,7 +268,7 @@ async def test_error_during_turn_yields_single_error_event_and_persists_nothing(
     chunks = [
         c
         async for c in stream_chat(
-            provider=provider, registry=registry, store=store, session_id="s1", message="hello"
+            provider=provider, registry=registry, store=store, session_id="s1", message="hello", model="claude-sonnet-4-6"
         )
     ]
 
@@ -275,3 +277,76 @@ async def test_error_during_turn_yields_single_error_event_and_persists_nothing(
 
     history = await store.get_history("s1")
     assert history == []
+
+
+# ---------------------------------------------------------------------------
+# Behavior 7: successful turn logs usage exactly once
+# ---------------------------------------------------------------------------
+
+
+async def test_successful_turn_logs_usage_once(caplog):
+    provider = FakeProvider(
+        [[TextDelta("Hi"), TurnComplete(stop_reason="end_turn", input_tokens=7, output_tokens=11)]]
+    )
+    registry = ToolRegistry()
+    store = InMemoryConversationStore()
+
+    with caplog.at_level(logging.INFO, logger="augur.observability"):
+        chunks = [
+            c
+            async for c in stream_chat(
+                provider=provider,
+                registry=registry,
+                store=store,
+                session_id="s1",
+                message="hello",
+                model="claude-sonnet-4-6",
+            )
+        ]
+
+    events = _parse_sse(chunks)
+    assert events[-1][0] == "done"
+
+    usage_records = [r for r in caplog.records if r.name == "augur.observability"]
+    assert len(usage_records) == 1
+    record = usage_records[0]
+    assert record.input_tokens == 7
+    assert record.output_tokens == 11
+    assert record.cost_usd == pytest.approx(
+        compute_cost(
+            input_tokens=7,
+            output_tokens=11,
+            input_price_per_mtok=3.0,
+            output_price_per_mtok=15.0,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# Behavior 8: errored turn does not log usage
+# ---------------------------------------------------------------------------
+
+
+async def test_errored_turn_does_not_log_usage(caplog):
+    provider = FakeProvider([RuntimeError("boom")])
+    registry = ToolRegistry()
+    store = InMemoryConversationStore()
+
+    with caplog.at_level(logging.INFO, logger="augur.observability"):
+        chunks = [
+            c
+            async for c in stream_chat(
+                provider=provider,
+                registry=registry,
+                store=store,
+                session_id="s1",
+                message="hello",
+                model="claude-sonnet-4-6",
+            )
+        ]
+
+    events = _parse_sse(chunks)
+    assert events == [("error", {"type": "internal", "message": "An internal error occurred."})]
+
+    usage_records = [r for r in caplog.records if r.name == "augur.observability"]
+    assert len(usage_records) == 0
