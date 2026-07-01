@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from app.chat import stream_chat
 from app.config import get_settings
 from app.conversation import get_conversation_store
+from app.observability import configure_logging
 from app.provider import get_provider
 from app.tools import get_registry
 
@@ -22,6 +23,8 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    configure_logging()
+
     application = FastAPI(lifespan=lifespan)
 
     @application.get("/health")

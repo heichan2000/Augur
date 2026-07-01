@@ -1,15 +1,77 @@
-"""Structured token/cost observability for completed chat turns.
+"""Structured token/cost observability for chat turns.
 
-Emits one structured INFO log record per successfully completed turn via
+Emits one structured INFO log record per successfully completed turn (with
+computed cost) and one structured WARNING record per failed turn, both via
 the ``"augur.observability"`` logger. Cost computation is pure arithmetic
 and pricing lookup degrades gracefully for unknown models — neither may
-crash the request that triggered it.
+crash the request that triggered it. `configure_logging` wires a minimal
+JSON-line handler onto the parent ``"augur"`` logger so these records are
+actually emitted (and readable) in a default deployment.
 """
 from __future__ import annotations
 
+import json
 import logging
 
 logger = logging.getLogger("augur.observability")
+
+# The only record attributes a structured-log consumer may see, beyond the
+# standard level/logger/message fields. Keeps secrets and log-record noise
+# (pathname, args, exc_info, ...) out of the emitted JSON.
+_STRUCTURED_FIELDS = (
+    "session_id",
+    "model",
+    "input_tokens",
+    "output_tokens",
+    "cost_usd",
+    "error_type",
+)
+
+
+class StructuredFormatter(logging.Formatter):
+    """Renders a LogRecord as a single JSON line.
+
+    Includes `level`, `logger`, `message`, plus whichever of the whitelisted
+    observability fields (`_STRUCTURED_FIELDS`) are present on the record.
+    Fields absent on a given record are omitted — no arbitrary record
+    attributes are ever included.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, object] = {
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        for field in _STRUCTURED_FIELDS:
+            if field in record.__dict__:
+                payload[field] = record.__dict__[field]
+        return json.dumps(payload)
+
+
+def configure_logging(level: int = logging.INFO) -> None:
+    """Attach a single structured stderr handler to the "augur" logger.
+
+    Idempotent: calling this more than once (e.g. because `create_app()`
+    runs at import time and tests build many apps) does not stack duplicate
+    handlers. Sets `propagate = False` so the root logger — which a default
+    deployment leaves unconfigured at WARNING — doesn't also see (and drop,
+    or double-emit) these records.
+    """
+    target = logging.getLogger("augur")
+    target.setLevel(level)
+    target.propagate = False
+
+    already_configured = any(
+        isinstance(handler.formatter, StructuredFormatter) for handler in target.handlers
+    )
+    if already_configured:
+        return
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(StructuredFormatter())
+    target.addHandler(handler)
+
 
 # USD per 1,000,000 tokens, per model. Anthropic list prices — maintained by
 # hand; edit when the configured model or its pricing changes. Source of truth
