@@ -2,7 +2,8 @@
 
 This document is the authoritative reference for the Server-Sent Events (SSE) wire schema
 used by the Augur `/chat` streaming endpoint. The backend (`backend/app/sse.py`) and the
-frontend (`frontend/src/lib/sse.ts`) both implement this contract. Future work must not
+frontend (`frontend/src/lib/sse.ts` for the types, `frontend/src/lib/sse-parser.ts` for the
+wire parser) both implement this contract. Future work must not
 change existing field names or types — only additive (backward-compatible) changes are
 allowed.
 
