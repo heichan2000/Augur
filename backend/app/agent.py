@@ -12,6 +12,7 @@ Phase scope (future concerns, not implemented here):
 """
 from __future__ import annotations
 
+import dataclasses
 from typing import Any, AsyncIterator
 
 from app.config import AGENT_MAX_STEPS
@@ -21,6 +22,25 @@ from app.tools import ToolRegistry
 Message = dict[str, Any]  # Anthropic-format: {"role": ..., "content": ...}
 
 
+@dataclasses.dataclass
+class TurnProgress:
+    """What a turn has produced so far, readable before it finishes.
+
+    ``run_turn`` yields its totals only in the closing ``TurnComplete``, so
+    a caller whose turn is cut short never sees them. Passing one of these
+    in gives the caller an object it owns and can still read afterwards —
+    the tokens the provider already billed, and any answer streamed since
+    the last message ``run_turn`` committed to the messages list.
+
+    ``partial_text`` is empty whenever the turn is between steps: the text
+    it held has been appended to ``messages`` and is no longer partial.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    partial_text: str = ""
+
+
 async def run_turn(
     *,
     provider: Any,
@@ -28,6 +48,7 @@ async def run_turn(
     messages: list[Message],
     system: str | None = None,
     max_steps: int = AGENT_MAX_STEPS,
+    progress: TurnProgress | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive one turn to completion, streaming events as they arrive.
 
@@ -37,9 +58,14 @@ async def run_turn(
     ``stop_reason`` is the terminal step's and whose token counts are
     summed across all steps. Never raises or hangs on the ``max_steps``
     bound — it simply stops.
+
+    Pass a *progress* object to read those totals — and any answer
+    streamed since the last committed message — without waiting for the
+    closing ``TurnComplete``. A caller whose turn is stopped part-way
+    never receives that event, so this is the only way to see what the
+    turn had produced by then.
     """
-    total_input_tokens = 0
-    total_output_tokens = 0
+    progress = progress if progress is not None else TurnProgress()
     final_stop_reason: str | None = None
     tools = registry.schemas() or None
 
@@ -50,13 +76,14 @@ async def run_turn(
         async for event in provider.stream_turn(messages=messages, system=system, tools=tools):
             if isinstance(event, TextDelta):
                 text_parts.append(event.text)
+                progress.partial_text = "".join(text_parts)
                 yield event
             elif isinstance(event, ToolUseRequested):
                 tool_uses.append(event)
                 yield event
             elif isinstance(event, TurnComplete):
-                total_input_tokens += event.input_tokens
-                total_output_tokens += event.output_tokens
+                progress.input_tokens += event.input_tokens
+                progress.output_tokens += event.output_tokens
                 final_stop_reason = event.stop_reason
 
         content: list[dict[str, Any]] = []
@@ -73,6 +100,8 @@ async def run_turn(
                 }
             )
         messages.append({"role": "assistant", "content": content})
+        # Committed to *messages* — no longer the caller's to salvage.
+        progress.partial_text = ""
 
         if not tool_uses:
             break
@@ -93,6 +122,6 @@ async def run_turn(
 
     yield TurnComplete(
         stop_reason=final_stop_reason,
-        input_tokens=total_input_tokens,
-        output_tokens=total_output_tokens,
+        input_tokens=progress.input_tokens,
+        output_tokens=progress.output_tokens,
     )

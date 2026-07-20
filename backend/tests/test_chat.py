@@ -258,8 +258,13 @@ async def test_empty_content_assistant_message_not_persisted():
     events = _parse_sse(chunks)
     assert events[-1][0] == "done"
 
+    # The model returned nothing, so there is no exchange to record. This
+    # used to keep the user's message; it now goes too, under the same rule
+    # that stops a stopped-before-text turn leaving a question behind with
+    # nothing answering it. The turn still completes — only the storing of
+    # a half-exchange changed.
     history = await store.get_history("s1")
-    assert history == [{"role": "user", "content": "hello"}]
+    assert history == []
 
 
 # ---------------------------------------------------------------------------
@@ -394,11 +399,241 @@ async def test_answer_survives_alongside_an_unanswered_tool_call():
 
 
 # ---------------------------------------------------------------------------
+# Behavior 5d: A stopped turn keeps the answer the user already read
+# ---------------------------------------------------------------------------
+
+
+async def _stop_after(stream, count: int = 1) -> list[str]:
+    """Consume *count* events, then go away — the client pressing Stop.
+
+    Closing the generator is what a dropped connection looks like from
+    inside ``stream_chat``: it is suspended at a yield nobody will read.
+    """
+    seen = []
+    async for chunk in stream:
+        seen.append(chunk)
+        if len(seen) == count:
+            break
+    await stream.aclose()
+    return seen
+
+
+async def _stop_after_first_event(stream) -> list[str]:
+    return await _stop_after(stream, 1)
+
+
+async def test_stopping_mid_answer_persists_the_partial_text():
+    provider = FakeProvider(
+        [
+            [
+                TextDelta("Half an "),
+                TextDelta("answer"),
+                TurnComplete(stop_reason="end_turn", input_tokens=3, output_tokens=5),
+            ]
+        ]
+    )
+    registry = ToolRegistry()
+    store = InMemoryConversationStore()
+
+    stream = stream_chat(
+        provider=provider,
+        registry=registry,
+        store=store,
+        session_id="s1",
+        message="tell me",
+        model="claude-sonnet-4-6",
+    )
+    seen = await _stop_after_first_event(stream)
+
+    assert _parse_sse(seen) == [("token", {"text": "Half an "})]
+
+    history = await store.get_history("s1")
+    assert history == [
+        {"role": "user", "content": "tell me"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Half an "}]},
+    ]
+
+
+async def test_stopping_before_any_text_persists_nothing():
+    # Stopped while the first tool call was still running, so the turn
+    # never produced an answer. Leaving the user's message behind on its
+    # own would put a question in history that nothing answers — and cost
+    # them Retry, which is withheld once a turn is persisted.
+    async def handler(tool_input: dict) -> str:
+        return "echo-result"
+
+    registry = _make_registry(handler=handler)
+    store = InMemoryConversationStore()
+    provider = FakeProvider(
+        [
+            [
+                ToolUseRequested(id="t1", name="echo", input={}),
+                TurnComplete(stop_reason="tool_use", input_tokens=2, output_tokens=1),
+            ]
+        ]
+    )
+
+    stream = stream_chat(
+        provider=provider,
+        registry=registry,
+        store=store,
+        session_id="s1",
+        message="use the tool",
+        model="claude-sonnet-4-6",
+    )
+    seen = await _stop_after_first_event(stream)
+
+    assert _parse_sse(seen) == [("tool_use", {"id": "t1", "name": "echo", "input": {}})]
+
+    history = await store.get_history("s1")
+    assert history == []
+
+
+async def test_stopping_with_a_tool_call_outstanding_keeps_the_text():
+    # The turn streamed an answer and then asked for a tool it never got
+    # back. The call cannot be replayed, but the answer was on screen — so
+    # the call goes and the answer stays.
+    async def handler(tool_input: dict) -> str:
+        return "echo-result"
+
+    registry = _make_registry(handler=handler)
+    store = InMemoryConversationStore()
+    provider = FakeProvider(
+        [
+            [
+                TextDelta("Looking that up."),
+                ToolUseRequested(id="t1", name="echo", input={}),
+                TurnComplete(stop_reason="tool_use", input_tokens=2, output_tokens=2),
+            ]
+        ]
+    )
+
+    stream = stream_chat(
+        provider=provider,
+        registry=registry,
+        store=store,
+        session_id="s1",
+        message="look it up",
+        model="claude-sonnet-4-6",
+    )
+    async for _ in stream:
+        pass_through = True  # noqa: F841 - consume the token, then the tool_use
+        break
+    await stream.aclose()
+
+    history = await store.get_history("s1")
+    assert history == [
+        {"role": "user", "content": "look it up"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Looking that up."}]},
+    ]
+
+
+async def test_assistant_can_refer_back_to_a_stopped_answer():
+    store = InMemoryConversationStore()
+    registry = ToolRegistry()
+    stopped = FakeProvider(
+        [
+            [
+                TextDelta("Point one is cost."),
+                TextDelta(" Point two is speed."),
+                TurnComplete(stop_reason="end_turn", input_tokens=4, output_tokens=6),
+            ]
+        ]
+    )
+
+    stream = stream_chat(
+        provider=stopped,
+        registry=registry,
+        store=store,
+        session_id="s1",
+        message="list the tradeoffs",
+        model="claude-sonnet-4-6",
+    )
+    await _stop_after_first_event(stream)
+
+    follow_up = FakeProvider(
+        [[TextDelta("Cost means..."), TurnComplete(stop_reason="end_turn", input_tokens=1, output_tokens=1)]]
+    )
+    async for _ in stream_chat(
+        provider=follow_up,
+        registry=registry,
+        store=store,
+        session_id="s1",
+        message="expand on that last point",
+        model="claude-sonnet-4-6",
+    ):
+        pass
+
+    # The stopped turn is in the history the model is asked to continue
+    # from, so "that last point" refers to something it can actually see.
+    sent = follow_up.received_calls[0]["messages"]
+    assert sent[:3] == [
+        {"role": "user", "content": "list the tradeoffs"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Point one is cost."}]},
+        {"role": "user", "content": "expand on that last point"},
+    ]
+
+
+async def test_stopped_turn_logs_the_rounds_already_billed(caplog):
+    # A provider reports usage in its closing event, so a round cut off
+    # part-way has nothing to report yet. Rounds that already finished do:
+    # stopping in round three still costs money for rounds one and two, and
+    # that is what has to reach the cost log.
+    async def handler(tool_input: dict) -> str:
+        return "echo-result"
+
+    registry = _make_registry(handler=handler)
+    store = InMemoryConversationStore()
+    provider = FakeProvider(
+        [
+            [
+                ToolUseRequested(id="t1", name="echo", input={}),
+                TurnComplete(stop_reason="tool_use", input_tokens=5, output_tokens=1),
+            ],
+            [
+                ToolUseRequested(id="t2", name="echo", input={}),
+                TurnComplete(stop_reason="tool_use", input_tokens=6, output_tokens=2),
+            ],
+            [
+                TextDelta("still going"),
+                TurnComplete(stop_reason="end_turn", input_tokens=99, output_tokens=99),
+            ],
+        ]
+    )
+
+    with caplog.at_level(logging.INFO, logger="augur.observability"):
+        stream = stream_chat(
+            provider=provider,
+            registry=registry,
+            store=store,
+            session_id="s1",
+            message="use the tools",
+            model="claude-sonnet-4-6",
+        )
+        await _stop_after(stream, 2)
+
+    usage_records = [
+        r for r in caplog.records if r.name == "augur.observability" and r.msg == "turn usage"
+    ]
+    assert len(usage_records) == 1
+    # Round one is closed and billed; round two is still open, and round
+    # three never ran, so neither contributes.
+    assert usage_records[0].input_tokens == 5
+    assert usage_records[0].output_tokens == 1
+
+
+# ---------------------------------------------------------------------------
 # Behavior 6: Error path
 # ---------------------------------------------------------------------------
 
 
 async def test_error_during_turn_yields_single_error_event_and_persists_nothing():
+    # A failed turn is atomic by choice, not by accident. A stopped turn
+    # keeps whatever answer it produced, so "nothing survives an
+    # incomplete turn" is no longer a property of the control flow — this
+    # case has to stay atomic deliberately. A failed turn produced no
+    # answer, so storing the user's message alone would leave a question
+    # with nothing answering it and make a retry look like asking twice.
     provider = FakeProvider([RuntimeError("boom")])
     registry = ToolRegistry()
     store = InMemoryConversationStore()

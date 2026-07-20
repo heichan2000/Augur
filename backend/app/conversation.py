@@ -96,6 +96,11 @@ def persistable_messages(messages: list[Message]) -> list[Message]:
     because the user read it and the model should be able to recall it. A
     message left with no content at all is dropped entirely, and a sequence
     with no unanswered call is returned unchanged.
+
+    A turn that leaves no assistant content at all persists nothing, not
+    even the user's message. A question with nothing answering it is not
+    worth storing: it would reach the model as an exchange that never
+    happened, and re-asking would record it twice.
     """
     persistable: list[Message] = []
     for index, message in enumerate(messages):
@@ -104,6 +109,9 @@ def persistable_messages(messages: list[Message]) -> list[Message]:
         kept = _without_unanswered_calls(message, answered)
         if kept is not None:
             persistable.append(kept)
+
+    if not any(message.get("role") == "assistant" for message in persistable):
+        return []
     return persistable
 
 

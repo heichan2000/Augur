@@ -10,13 +10,22 @@ message) is only persisted to the store after the turn completes
 successfully, and only the messages new to this turn. On any error during
 the turn, nothing is persisted.
 
-Stored history is therefore always a valid, replayable Anthropic message
-sequence: the turn's new messages pass through
-``conversation.persistable_messages`` first, which drops any tool call
-left unanswered — as when ``run_turn`` hits its ``max_steps`` bound while
-the model is still requesting tools — along with any message left empty.
-An answer streamed alongside such a call survives; only the call itself
-is dropped.
+Each way a turn can end has one persistence rule:
+
+- **Completes** — persists in full.
+- **Fails** (provider error, rate limit, internal) — persists nothing.
+  Deliberately atomic: no answer was produced, so storing the user's
+  message alone would leave a question nothing answers and make a retry
+  look like asking twice.
+- **Stopped** (the client went away) — persists the user's message and
+  whatever answer had been streamed, because the user read it.
+
+All three run the turn's new messages through
+``conversation.persistable_messages``, which drops any tool call left
+unanswered — as when ``run_turn`` hits its ``max_steps`` bound while the
+model is still requesting tools — along with any message left empty, and
+the whole turn if no assistant content survives. An answer streamed
+alongside an unanswerable call survives; only the call is dropped.
 
 Atomicity note: the persistence loop below assumes ``store.append`` cannot
 fail, which holds for the Phase-1 in-memory store. A persistent (Phase-2)
@@ -28,7 +37,7 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
-from app.agent import run_turn
+from app.agent import TurnProgress, run_turn
 from app.conversation import ConversationStore, Message, persistable_messages
 from app.observability import log_turn_error, log_turn_usage
 from app.provider import (
@@ -73,15 +82,43 @@ async def stream_chat(
     messages: list[Message] = [*history, user_msg]
 
     final_turn: TurnComplete | None = None
+    progress = TurnProgress()
+
+    async def persist(new_messages: list[Message]) -> None:
+        for new_message in persistable_messages(new_messages):
+            await store.append(session_id, new_message)
 
     try:
-        async for event in run_turn(provider=provider, registry=registry, messages=messages, system=system):
+        async for event in run_turn(
+            provider=provider,
+            registry=registry,
+            messages=messages,
+            system=system,
+            progress=progress,
+        ):
             if isinstance(event, TextDelta):
                 yield format_sse(TokenEvent(text=event.text))
             elif isinstance(event, ToolUseRequested):
                 yield format_sse(ToolUseEvent(id=event.id, name=event.name, input=event.input))
             elif isinstance(event, TurnComplete):
                 final_turn = event
+    except GeneratorExit:
+        # The client went away mid-turn. Persist what it already read, log
+        # what the provider already billed, then let the close proceed —
+        # nothing may be yielded here, and nothing needs to be.
+        stopped: list[Message] = list(messages[len(history):])
+        if progress.partial_text:
+            stopped.append(
+                {"role": "assistant", "content": [{"type": "text", "text": progress.partial_text}]}
+            )
+        await persist(stopped)
+        log_turn_usage(
+            session_id=session_id,
+            model=model,
+            input_tokens=progress.input_tokens,
+            output_tokens=progress.output_tokens,
+        )
+        raise
     except ProviderRateLimitError:
         log_turn_error(session_id=session_id, error_type="rate_limit")
         yield format_sse(
@@ -105,8 +142,7 @@ async def stream_chat(
         yield format_sse(ErrorEvent(type="internal", message="An internal error occurred."))
         return
 
-    for new_message in persistable_messages(messages[len(history):]):
-        await store.append(session_id, new_message)
+    await persist(messages[len(history):])
 
     if final_turn is not None:
         log_turn_usage(
