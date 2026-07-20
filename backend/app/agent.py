@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
+from app.config import AGENT_MAX_STEPS
 from app.provider import ProviderEvent, TextDelta, ToolUseRequested, TurnComplete
 from app.tools import ToolRegistry
 
@@ -26,7 +27,7 @@ async def run_turn(
     registry: ToolRegistry,
     messages: list[Message],
     system: str | None = None,
-    max_steps: int = 8,
+    max_steps: int = AGENT_MAX_STEPS,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive one turn to completion, streaming events as they arrive.
 

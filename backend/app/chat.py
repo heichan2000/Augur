@@ -7,17 +7,17 @@ has no FastAPI/HTTP dependency — the FastAPI route that adapts this to a
 
 Persistence: the working ``messages`` list (prior history + the new user
 message) is only persisted to the store after the turn completes
-successfully, and only the messages new to this turn (skipping any with
-empty ``content``) — so stored history always stays a valid, replayable
-Anthropic message sequence. On any error during the turn, nothing is
-persisted.
+successfully, and only the messages new to this turn. On any error during
+the turn, nothing is persisted.
 
-Phase-1 limitation (documented, not fixed here): if ``run_turn`` hits its
-``max_steps`` bound while the model is still requesting tools, the final
-appended message is an assistant ``tool_use`` block with no matching
-``tool_result``. Persisting that message would leave the stored history in
-a state that is not a valid replay sequence. This requires 8 tool rounds
-in a single turn and is out of scope for #4.
+Stored history is therefore always a valid, replayable Anthropic message
+sequence. Two rules keep it so: messages with empty ``content`` are
+skipped, and the new messages pass through
+``conversation.replayable_prefix`` first — so a turn that ends
+mid-tool-round (``run_turn`` hitting its ``max_steps`` bound while the
+model is still requesting tools) drops its unanswered assistant
+``tool_use`` message rather than persisting a history we could not
+replay.
 
 Atomicity note: the persistence loop below assumes ``store.append`` cannot
 fail, which holds for the Phase-1 in-memory store. A persistent (Phase-2)
@@ -30,7 +30,7 @@ from __future__ import annotations
 from typing import Any, AsyncIterator
 
 from app.agent import run_turn
-from app.conversation import ConversationStore, Message
+from app.conversation import ConversationStore, Message, replayable_prefix
 from app.observability import log_turn_error, log_turn_usage
 from app.provider import (
     ProviderError,
@@ -56,8 +56,9 @@ async def stream_chat(
     """Run one chat turn and yield SSE wire strings for the response body.
 
     Loads prior history for *session_id*, runs the turn via ``run_turn``,
-    and on success persists the turn's new messages before yielding the
-    final ``done`` event. On any exception raised while producing the
+    and on success persists the turn's new messages — as far as they
+    form a replayable sequence — before yielding the final ``done``
+    event. On any exception raised while producing the
     turn, yields a single typed ``error`` event — ``rate_limit`` for
     ``ProviderRateLimitError``, ``provider_error`` for other
     ``ProviderError``s, ``internal`` for anything else — and stops: no
@@ -105,7 +106,7 @@ async def stream_chat(
         yield format_sse(ErrorEvent(type="internal", message="An internal error occurred."))
         return
 
-    for new_message in messages[len(history):]:
+    for new_message in replayable_prefix(messages[len(history):]):
         if new_message["content"] == []:
             continue
         await store.append(session_id, new_message)

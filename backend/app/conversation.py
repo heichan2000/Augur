@@ -7,9 +7,14 @@ The interface is async by design so Phase 2+ can swap in a persistent
 (e.g. Postgres) store whose operations are genuinely async; call sites
 already use ``await`` and require no changes on that swap.
 
+``replayable_prefix`` is the single guard a persistence path runs its
+messages through, so a turn can never leave stored history in a state we
+could not replay to the model.
+
 Phase 1 limitations (future concerns, not implemented here):
 - No locking/concurrency primitives — safe only for single-process in-memory use.
-- No message validation — callers are trusted to supply well-formed dicts.
+- No message validation beyond ``replayable_prefix`` — callers are otherwise
+  trusted to supply well-formed dicts.
 - No history truncation/windowing — unbounded growth per session.
 - Shallow copy returned by get_history — message dicts themselves are shared
   between the caller and internal storage; do not mutate dict contents.
@@ -21,6 +26,62 @@ import functools
 from typing import Any
 
 Message = dict[str, Any]  # Anthropic-format: {"role": ..., "content": ...}
+
+
+def _content_blocks(message: Message, block_type: str) -> list[dict[str, Any]]:
+    """Return *message*'s content blocks of *block_type*.
+
+    String content (a plain text message) holds no blocks.
+    """
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    return [
+        block
+        for block in content
+        if isinstance(block, dict) and block.get("type") == block_type
+    ]
+
+
+def _tool_use_ids(message: Message) -> set[str | None]:
+    """Return the ids of the tool calls *message* requests.
+
+    A ``tool_use`` block with no ``id`` yields ``None``, which no
+    ``tool_result`` can answer — a call we cannot match is a dangling one.
+    """
+    return {block.get("id") for block in _content_blocks(message, "tool_use")}
+
+
+def _tool_result_ids(message: Message) -> set[str | None]:
+    """Return the ids of the tool calls *message* answers."""
+    return {
+        block["tool_use_id"]
+        for block in _content_blocks(message, "tool_result")
+        if "tool_use_id" in block
+    }
+
+
+def replayable_prefix(messages: list[Message]) -> list[Message]:
+    """Return the longest prefix of *messages* that is safe to persist.
+
+    A stored history is replayable only if every assistant ``tool_use``
+    block is answered by a ``tool_result`` in the message that follows it.
+    An assistant message whose tool calls go unanswered — as happens when
+    the agent loop hits its step bound mid-tool-round — is dropped along
+    with everything after it. A sequence with no unanswered tool call is
+    returned unchanged.
+    """
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant":
+            continue
+        requested = _tool_use_ids(message)
+        if not requested:
+            continue
+        following = messages[index + 1] if index + 1 < len(messages) else None
+        answered = _tool_result_ids(following) if following else set()
+        if not requested <= answered:
+            return list(messages[:index])
+    return list(messages)
 
 
 class ConversationStore(abc.ABC):
