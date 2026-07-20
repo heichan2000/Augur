@@ -179,16 +179,24 @@ describe("failure handling", () => {
         },
       }),
     );
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
 
     render(<Chat />);
     await userEvent.click(screen.getByRole("button", { name: "What time is it right now?" }));
 
+    // The turn is interrupted, so Retry is offered…
     await waitFor(() =>
       expect(screen.getByText("Connection lost mid-answer")).toBeInTheDocument(),
     );
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    // …and nothing is left thinking or locked.
     expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
     expect(screen.getByRole("textbox")).toBeEnabled();
+
+    // The defect itself is not swallowed.
+    expect(reported).toHaveBeenCalledOnce();
+    reported.mockRestore();
   });
 
   it("reports an unreachable backend as an error", async () => {
