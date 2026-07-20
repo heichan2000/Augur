@@ -58,6 +58,8 @@ export type UseChat = {
 export function useChat(): UseChat {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const abortRef = useRef<AbortController | null>(null);
+  /** The assistant turn the in-flight stream feeds — what Stop targets. */
+  const activeTurnRef = useRef<string | null>(null);
   const sessionId = useSyncExternalStore(
     sessionStore.subscribe,
     sessionStore.read,
@@ -70,54 +72,63 @@ export function useChat(): UseChat {
   // Abandon any in-flight request if the view goes away.
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const consume = useCallback(async (session: string, message: string) => {
-    const controller = new AbortController();
-    abortRef.current = controller;
+  const consume = useCallback(
+    async (session: string, message: string, assistantTurnId: string) => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+      activeTurnRef.current = assistantTurnId;
 
-    try {
-      for await (const event of streamChatTurn({
-        sessionId: session,
-        message,
-        signal: controller.signal,
-      })) {
-        dispatch({ type: "sse", event });
+      try {
+        for await (const event of streamChatTurn({
+          sessionId: session,
+          message,
+          signal: controller.signal,
+        })) {
+          dispatch({ type: "sse", assistantTurnId, event });
+        }
+        // A turn that closed itself (done / error) ignores this; one that did
+        // not is marked interrupted.
+        dispatch({ type: "stream_ended", assistantTurnId });
+      } finally {
+        if (abortRef.current === controller) abortRef.current = null;
+        if (activeTurnRef.current === assistantTurnId) activeTurnRef.current = null;
       }
-      // A turn that closed itself (done / error) ignores this; one that did
-      // not is marked interrupted.
-      dispatch({ type: "stream_ended" });
-    } finally {
-      if (abortRef.current === controller) abortRef.current = null;
-    }
-  }, []);
+    },
+    [],
+  );
 
   const send = useCallback(
     (text: string) => {
       const trimmed = text.trim();
       if (trimmed === "" || sessionId === null || state.status === "busy") return;
 
+      const assistantTurnId = crypto.randomUUID();
       dispatch({
         type: "send",
         text: trimmed,
         userTurnId: crypto.randomUUID(),
-        assistantTurnId: crypto.randomUUID(),
+        assistantTurnId,
       });
-      void consume(sessionId, trimmed);
+      void consume(sessionId, trimmed, assistantTurnId);
     },
     [consume, sessionId, state.status],
   );
 
   const stop = useCallback(() => {
+    const assistantTurnId = activeTurnRef.current;
+    if (assistantTurnId === null) return;
+
     abortRef.current?.abort();
-    dispatch({ type: "stopped" });
+    dispatch({ type: "stopped", assistantTurnId });
   }, []);
 
   const retry = useCallback(
     (turn: AssistantTurn) => {
       const message = promptFor(state, turn.id);
-      if (message === null || sessionId === null) return;
+      if (message === null || sessionId === null || state.status === "busy") return;
 
       dispatch({ type: "retry", assistantTurnId: turn.id });
-      void consume(sessionId, message);
+      void consume(sessionId, message, turn.id);
     },
     [consume, sessionId, state],
   );

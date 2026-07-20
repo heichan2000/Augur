@@ -2,7 +2,7 @@
 
 import type { TurnError as TurnErrorData } from "@/lib/chat-state";
 
-import { PRIMARY_BUTTON, SECONDARY_BUTTON } from "./button-styles";
+import { DISABLED_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from "./button-styles";
 
 /**
  * How each error code is presented. The three tiers are deliberate:
@@ -56,10 +56,13 @@ export function TurnError({
   error,
   onRetry,
   onDiscard,
+  retryDisabled = false,
 }: {
   error: TurnErrorData;
   onRetry: () => void;
   onDiscard: () => void;
+  /** True while another turn is in flight — one stream at a time. */
+  retryDisabled?: boolean;
 }) {
   const { tier, title } = PRESENTATION[error.code] ?? {
     tier: "fault" as const,
@@ -96,7 +99,8 @@ export function TurnError({
           <button
             type="button"
             onClick={onRetry}
-            className={PRIMARY_BUTTON}
+            disabled={retryDisabled}
+            className={retryDisabled ? DISABLED_BUTTON : PRIMARY_BUTTON}
           >
             Retry
           </button>
@@ -111,7 +115,14 @@ export function TurnError({
  * dropped. The partial answer stays on screen, dimmed by the caller and
  * explicitly labelled incomplete, rather than silently freezing.
  */
-export function InterruptedNotice({ onRetry }: { onRetry: () => void }) {
+export function InterruptedNotice({
+  onRetry,
+  retryDisabled = false,
+}: {
+  onRetry: () => void;
+  /** True while another turn is in flight — one stream at a time. */
+  retryDisabled?: boolean;
+}) {
   return (
     <div
       role="alert"
@@ -127,7 +138,8 @@ export function InterruptedNotice({ onRetry }: { onRetry: () => void }) {
       <button
         type="button"
         onClick={onRetry}
-        className={`ml-auto ${PRIMARY_BUTTON}`}
+        disabled={retryDisabled}
+        className={`ml-auto ${retryDisabled ? DISABLED_BUTTON : PRIMARY_BUTTON}`}
       >
         Retry
       </button>
