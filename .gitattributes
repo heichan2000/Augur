@@ -1,0 +1,12 @@
+# Line endings are LF everywhere — in the repository and in the working
+# tree — so a checkout is byte-identical on Windows and Linux and nobody
+# sees a file turn up modified with no real change.
+#
+# This overrides a contributor's core.autocrlf, which is why it belongs
+# here rather than in each person's git config.
+
+# ---- Text ----
+* text=auto eol=lf
+
+# ---- Binary ----
+*.ico binary
