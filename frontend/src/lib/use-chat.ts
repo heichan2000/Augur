@@ -74,6 +74,9 @@ export function useChat(): UseChat {
   // Abandon any in-flight request if the view goes away.
   useEffect(() => () => activeStreamRef.current?.controller.abort(), []);
 
+  // Derived once so send/retry depend on the boolean, not the whole state.
+  const busy = isBusy(state);
+
   const consume = useCallback(
     async (session: string, message: string, assistantTurnId: string) => {
       const controller = new AbortController();
@@ -101,7 +104,7 @@ export function useChat(): UseChat {
   const send = useCallback(
     (text: string) => {
       const trimmed = text.trim();
-      if (trimmed === "" || sessionId === null || isBusy(state)) return;
+      if (trimmed === "" || sessionId === null || busy) return;
 
       const assistantTurnId = crypto.randomUUID();
       dispatch({
@@ -112,7 +115,7 @@ export function useChat(): UseChat {
       });
       void consume(sessionId, trimmed, assistantTurnId);
     },
-    [consume, sessionId, state],
+    [busy, consume, sessionId],
   );
 
   const stop = useCallback(() => {
@@ -126,12 +129,12 @@ export function useChat(): UseChat {
   const retry = useCallback(
     (turn: AssistantTurn) => {
       const message = promptFor(state, turn.id);
-      if (message === null || sessionId === null || isBusy(state)) return;
+      if (message === null || sessionId === null || busy) return;
 
       dispatch({ type: "retry", assistantTurnId: turn.id });
       void consume(sessionId, message, turn.id);
     },
-    [consume, sessionId, state],
+    [busy, consume, sessionId, state],
   );
 
   const discard = useCallback(
