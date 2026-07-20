@@ -5,12 +5,9 @@ conversation store into a single async generator of SSE wire strings. It
 has no FastAPI/HTTP dependency — the FastAPI route that adapts this to a
 ``StreamingResponse`` is a separate concern (#4 Task 2).
 
-Persistence: the working ``messages`` list (prior history + the new user
-message) is only persisted to the store after the turn completes
-successfully, and only the messages new to this turn. On any error during
-the turn, nothing is persisted.
-
-Each way a turn can end has one persistence rule:
+Persistence works on the messages new to this turn — the working
+``messages`` list (prior history + the new user message) minus the history
+it started from. Each way a turn can end has one rule:
 
 - **Completes** — persists in full.
 - **Fails** (provider error, rate limit, internal) — persists nothing.
@@ -35,6 +32,7 @@ exception escapes the generator uncaught.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, AsyncIterator
 
 from app.agent import TurnProgress, run_turn
@@ -63,19 +61,24 @@ async def stream_chat(
 ) -> AsyncIterator[str]:
     """Run one chat turn and yield SSE wire strings for the response body.
 
-    Loads prior history for *session_id*, runs the turn via ``run_turn``,
-    and on success persists the turn's new messages — as far as they
-    form a replayable sequence — before yielding the final ``done``
-    event. On any exception raised while producing the
-    turn, yields a single typed ``error`` event — ``rate_limit`` for
-    ``ProviderRateLimitError``, ``provider_error`` for other
-    ``ProviderError``s, ``internal`` for anything else — and stops: no
-    `done`, and nothing is persisted.
+    Loads prior history for *session_id* and runs the turn via
+    ``run_turn``. On success, persists the turn's new messages — as far as
+    they form a replayable sequence — and logs one structured token/cost
+    usage record (see ``app.observability``) keyed by *model*, before
+    yielding the final ``done`` event.
 
-    On success, logs one structured token/cost usage record (see
-    ``app.observability``) keyed by *model* before yielding ``done``. On
-    error, logs one structured ``log_turn_error`` record instead — no
-    token counts are available there.
+    On any exception raised while producing the turn, yields a single
+    typed ``error`` event — ``rate_limit`` for ``ProviderRateLimitError``,
+    ``provider_error`` for other ``ProviderError``s, ``internal`` for
+    anything else — and stops: no ``done``, nothing persisted, and one
+    ``log_turn_error`` record instead (no token counts are available
+    there).
+
+    If the client goes away mid-turn the turn is *stopped*: whatever
+    answer had already been streamed is persisted and whatever tokens the
+    provider had already billed are logged, but nothing further is
+    yielded — the connection is gone. See the module docstring for the
+    full rule per outcome.
     """
     history = await store.get_history(session_id)
     user_msg: Message = {"role": "user", "content": message}
@@ -102,22 +105,30 @@ async def stream_chat(
                 yield format_sse(ToolUseEvent(id=event.id, name=event.name, input=event.input))
             elif isinstance(event, TurnComplete):
                 final_turn = event
-    except GeneratorExit:
-        # The client went away mid-turn. Persist what it already read, log
-        # what the provider already billed, then let the close proceed —
-        # nothing may be yielded here, and nothing needs to be.
+    except (GeneratorExit, asyncio.CancelledError):
+        # The client went away mid-turn. Which of the two arrives depends on
+        # where the turn happened to be: parked at a yield nobody will read
+        # gives GeneratorExit, suspended in its own await — waiting on the
+        # provider or a running tool, where a turn spends most of its time —
+        # gives CancelledError. Both are BaseExceptions, which is why the
+        # handlers below never saw either.
+        #
+        # Persist what the client already read, log what the provider
+        # already billed, then let the unwind proceed. Nothing may be
+        # yielded here, and nothing needs to be: the connection is gone.
         stopped: list[Message] = list(messages[len(history):])
         if progress.partial_text:
             stopped.append(
                 {"role": "assistant", "content": [{"type": "text", "text": progress.partial_text}]}
             )
         await persist(stopped)
-        log_turn_usage(
-            session_id=session_id,
-            model=model,
-            input_tokens=progress.input_tokens,
-            output_tokens=progress.output_tokens,
-        )
+        if progress.input_tokens or progress.output_tokens:
+            log_turn_usage(
+                session_id=session_id,
+                model=model,
+                input_tokens=progress.input_tokens,
+                output_tokens=progress.output_tokens,
+            )
         raise
     except ProviderRateLimitError:
         log_turn_error(session_id=session_id, error_type="rate_limit")

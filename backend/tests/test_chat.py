@@ -5,6 +5,8 @@ stream_turn() call, same style as tests/test_agent.py), a real
 InMemoryConversationStore, and a real ToolRegistry with a throwaway
 "echo" test tool. All test functions are async (asyncio_mode = "auto").
 """
+import asyncio
+import contextlib
 import json
 import logging
 
@@ -62,6 +64,28 @@ class FakeProvider:
 
 async def _echo_handler(tool_input: dict) -> str:
     return f"echo:{tool_input}"
+
+
+async def _fixed_result_handler(tool_input: dict) -> str:
+    """A tool whose result is the same every call, for exact assertions."""
+    return "echo-result"
+
+
+async def _stop_after(stream, count: int = 1) -> list[str]:
+    """Consume *count* events, then go away — the client pressing Stop.
+
+    Closing the generator is what a dropped connection looks like when the
+    turn is parked at a yield nobody will read. The other shape — cancelled
+    while suspended in its own await — is driven directly by the tests that
+    need it, since only a task cancel produces it.
+    """
+    seen = []
+    async for chunk in stream:
+        seen.append(chunk)
+        if len(seen) == count:
+            break
+    await stream.aclose()
+    return seen
 
 
 def _make_registry(handler=_echo_handler) -> ToolRegistry:
@@ -278,10 +302,7 @@ async def test_turn_that_exhausts_step_bound_persists_valid_replay_sequence():
     # tool_use with no tool_result to answer it. That message must not
     # reach stored history — what we persist has to stay a sequence we
     # could replay to the model.
-    async def handler(tool_input: dict) -> str:
-        return "echo-result"
-
-    registry = _make_registry(handler=handler)
+    registry = _make_registry(handler=_fixed_result_handler)
     store = InMemoryConversationStore()
     provider = FakeProvider(
         [
@@ -344,10 +365,7 @@ async def test_answer_survives_alongside_an_unanswered_tool_call():
     # user read that text, so it belongs in history; only the tool call it
     # sits beside is unanswerable. Dropping the whole message would lose an
     # answer the model can no longer recall.
-    async def handler(tool_input: dict) -> str:
-        return "echo-result"
-
-    registry = _make_registry(handler=handler)
+    registry = _make_registry(handler=_fixed_result_handler)
     store = InMemoryConversationStore()
     rounds: list[list] = [
         [
@@ -403,25 +421,6 @@ async def test_answer_survives_alongside_an_unanswered_tool_call():
 # ---------------------------------------------------------------------------
 
 
-async def _stop_after(stream, count: int = 1) -> list[str]:
-    """Consume *count* events, then go away — the client pressing Stop.
-
-    Closing the generator is what a dropped connection looks like from
-    inside ``stream_chat``: it is suspended at a yield nobody will read.
-    """
-    seen = []
-    async for chunk in stream:
-        seen.append(chunk)
-        if len(seen) == count:
-            break
-    await stream.aclose()
-    return seen
-
-
-async def _stop_after_first_event(stream) -> list[str]:
-    return await _stop_after(stream, 1)
-
-
 async def test_stopping_mid_answer_persists_the_partial_text():
     provider = FakeProvider(
         [
@@ -443,7 +442,7 @@ async def test_stopping_mid_answer_persists_the_partial_text():
         message="tell me",
         model="claude-sonnet-4-6",
     )
-    seen = await _stop_after_first_event(stream)
+    seen = await _stop_after(stream)
 
     assert _parse_sse(seen) == [("token", {"text": "Half an "})]
 
@@ -459,10 +458,7 @@ async def test_stopping_before_any_text_persists_nothing():
     # never produced an answer. Leaving the user's message behind on its
     # own would put a question in history that nothing answers — and cost
     # them Retry, which is withheld once a turn is persisted.
-    async def handler(tool_input: dict) -> str:
-        return "echo-result"
-
-    registry = _make_registry(handler=handler)
+    registry = _make_registry(handler=_fixed_result_handler)
     store = InMemoryConversationStore()
     provider = FakeProvider(
         [
@@ -481,7 +477,7 @@ async def test_stopping_before_any_text_persists_nothing():
         message="use the tool",
         model="claude-sonnet-4-6",
     )
-    seen = await _stop_after_first_event(stream)
+    seen = await _stop_after(stream)
 
     assert _parse_sse(seen) == [("tool_use", {"id": "t1", "name": "echo", "input": {}})]
 
@@ -489,12 +485,19 @@ async def test_stopping_before_any_text_persists_nothing():
     assert history == []
 
 
-async def test_stopping_with_a_tool_call_outstanding_keeps_the_text():
-    # The turn streamed an answer and then asked for a tool it never got
-    # back. The call cannot be replayed, but the answer was on screen — so
-    # the call goes and the answer stays.
+async def test_stopping_while_a_tool_runs_drops_the_call_and_keeps_the_text():
+    # The only way a stopped turn can carry an unanswered call: run_turn
+    # commits the assistant message the moment a round's stream ends, then
+    # awaits the tool before it can append the result. Cancelling in that
+    # window leaves a tool_use in messages that nothing will ever answer.
+    # The call cannot be replayed, but the text was on screen — so the call
+    # goes and the answer stays.
+    dispatching = asyncio.Event()
+
     async def handler(tool_input: dict) -> str:
-        return "echo-result"
+        dispatching.set()
+        await asyncio.sleep(10)  # cancelled here, mid-dispatch
+        return "never returned"
 
     registry = _make_registry(handler=handler)
     store = InMemoryConversationStore()
@@ -508,18 +511,22 @@ async def test_stopping_with_a_tool_call_outstanding_keeps_the_text():
         ]
     )
 
-    stream = stream_chat(
-        provider=provider,
-        registry=registry,
-        store=store,
-        session_id="s1",
-        message="look it up",
-        model="claude-sonnet-4-6",
-    )
-    async for _ in stream:
-        pass_through = True  # noqa: F841 - consume the token, then the tool_use
-        break
-    await stream.aclose()
+    async def consume() -> None:
+        async for _ in stream_chat(
+            provider=provider,
+            registry=registry,
+            store=store,
+            session_id="s1",
+            message="look it up",
+            model="claude-sonnet-4-6",
+        ):
+            pass
+
+    task = asyncio.create_task(consume())
+    await dispatching.wait()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
     history = await store.get_history("s1")
     assert history == [
@@ -549,7 +556,7 @@ async def test_assistant_can_refer_back_to_a_stopped_answer():
         message="list the tradeoffs",
         model="claude-sonnet-4-6",
     )
-    await _stop_after_first_event(stream)
+    await _stop_after(stream)
 
     follow_up = FakeProvider(
         [[TextDelta("Cost means..."), TurnComplete(stop_reason="end_turn", input_tokens=1, output_tokens=1)]]
@@ -579,10 +586,7 @@ async def test_stopped_turn_logs_the_rounds_already_billed(caplog):
     # part-way has nothing to report yet. Rounds that already finished do:
     # stopping in round three still costs money for rounds one and two, and
     # that is what has to reach the cost log.
-    async def handler(tool_input: dict) -> str:
-        return "echo-result"
-
-    registry = _make_registry(handler=handler)
+    registry = _make_registry(handler=_fixed_result_handler)
     store = InMemoryConversationStore()
     provider = FakeProvider(
         [

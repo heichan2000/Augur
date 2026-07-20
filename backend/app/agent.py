@@ -12,7 +12,7 @@ Phase scope (future concerns, not implemented here):
 """
 from __future__ import annotations
 
-import dataclasses
+from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
 from app.config import AGENT_MAX_STEPS
@@ -22,7 +22,7 @@ from app.tools import ToolRegistry
 Message = dict[str, Any]  # Anthropic-format: {"role": ..., "content": ...}
 
 
-@dataclasses.dataclass
+@dataclass
 class TurnProgress:
     """What a turn has produced so far, readable before it finishes.
 
@@ -76,7 +76,7 @@ async def run_turn(
         async for event in provider.stream_turn(messages=messages, system=system, tools=tools):
             if isinstance(event, TextDelta):
                 text_parts.append(event.text)
-                progress.partial_text = "".join(text_parts)
+                progress.partial_text += event.text
                 yield event
             elif isinstance(event, ToolUseRequested):
                 tool_uses.append(event)
