@@ -249,11 +249,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       if (index === -1) return state;
 
       // Drop the assistant turn and the user turn that prompted it, so the
-      // rejected message can go back to the composer for editing.
+      // rejected message can go back to the composer for editing. Discard only
+      // ever removes a closed turn, so it never ends a stream — the app status
+      // carries through unchanged and cannot free a composer that some *other*
+      // in-flight turn is holding locked.
       const start = index > 0 && state.turns[index - 1].kind === "user" ? index - 1 : index;
       return {
         turns: [...state.turns.slice(0, start), ...state.turns.slice(index + 1)],
-        status: "idle",
+        status: state.status,
       };
     }
   }
