@@ -262,6 +262,79 @@ async def test_empty_content_assistant_message_not_persisted():
 
 
 # ---------------------------------------------------------------------------
+# Behavior 5b: A turn that exhausts the step bound still leaves valid history
+# ---------------------------------------------------------------------------
+
+
+# Scripting this many tool rounds is what exhausts the bound; it tracks
+# run_turn's max_steps default (app/agent.py). If that default moves, this
+# must move with it.
+_MAX_STEPS = 8
+
+
+async def test_turn_that_exhausts_step_bound_persists_valid_replay_sequence():
+    # Every round requests a tool, so run_turn hits max_steps with tools
+    # still pending and the last message it appends is an assistant
+    # tool_use with no tool_result to answer it. That message must not
+    # reach stored history — what we persist has to stay a sequence we
+    # could replay to the model.
+    async def handler(tool_input: dict) -> str:
+        return "echo-result"
+
+    registry = _make_registry(handler=handler)
+    store = InMemoryConversationStore()
+    provider = FakeProvider(
+        [
+            [
+                ToolUseRequested(id=f"t{i}", name="echo", input={"round": i}),
+                TurnComplete(stop_reason="tool_use", input_tokens=1, output_tokens=1),
+            ]
+            for i in range(_MAX_STEPS)
+        ]
+    )
+
+    chunks = [
+        c
+        async for c in stream_chat(
+            provider=provider,
+            registry=registry,
+            store=store,
+            session_id="s1",
+            message="loop forever",
+            model="claude-sonnet-4-6",
+        )
+    ]
+
+    events = _parse_sse(chunks)
+    assert events[-1][0] == "done"
+
+    history = await store.get_history("s1")
+
+    # Every round but the last completed with its results; the final
+    # round's unanswered tool_use is dropped, so history ends on the
+    # preceding tool_result.
+    expected: list[dict] = [{"role": "user", "content": "loop forever"}]
+    for i in range(_MAX_STEPS - 1):
+        expected.append(
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": f"t{i}", "name": "echo", "input": {"round": i}}
+                ],
+            }
+        )
+        expected.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": f"t{i}", "content": "echo-result"}
+                ],
+            }
+        )
+    assert history == expected
+
+
+# ---------------------------------------------------------------------------
 # Behavior 6: Error path
 # ---------------------------------------------------------------------------
 
