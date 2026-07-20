@@ -330,6 +330,70 @@ async def test_turn_that_exhausts_step_bound_persists_valid_replay_sequence():
 
 
 # ---------------------------------------------------------------------------
+# Behavior 5c: An unanswered tool call costs only itself, not the answer
+# ---------------------------------------------------------------------------
+
+
+async def test_answer_survives_alongside_an_unanswered_tool_call():
+    # Same exhausted bound, except the final round also streams text. The
+    # user read that text, so it belongs in history; only the tool call it
+    # sits beside is unanswerable. Dropping the whole message would lose an
+    # answer the model can no longer recall.
+    async def handler(tool_input: dict) -> str:
+        return "echo-result"
+
+    registry = _make_registry(handler=handler)
+    store = InMemoryConversationStore()
+    rounds: list[list] = [
+        [
+            ToolUseRequested(id=f"t{i}", name="echo", input={"round": i}),
+            TurnComplete(stop_reason="tool_use", input_tokens=1, output_tokens=1),
+        ]
+        for i in range(AGENT_MAX_STEPS - 1)
+    ]
+    rounds.append(
+        [
+            TextDelta("Here is what I found so far."),
+            ToolUseRequested(id="t-last", name="echo", input={"round": "last"}),
+            TurnComplete(stop_reason="tool_use", input_tokens=1, output_tokens=1),
+        ]
+    )
+    provider = FakeProvider(rounds)
+
+    chunks = [
+        c
+        async for c in stream_chat(
+            provider=provider,
+            registry=registry,
+            store=store,
+            session_id="s1",
+            message="loop forever",
+            model="claude-sonnet-4-6",
+        )
+    ]
+
+    events = _parse_sse(chunks)
+    assert events[-1][0] == "done"
+
+    history = await store.get_history("s1")
+
+    assert history[-1] == {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Here is what I found so far."}],
+    }
+    # Nothing anywhere in history may request a tool that never came back.
+    persisted_calls = {
+        block["id"]
+        for message in history
+        if isinstance(message["content"], list)
+        for block in message["content"]
+        if block.get("type") == "tool_use"
+    }
+    assert "t-last" not in persisted_calls
+    assert persisted_calls == {f"t{i}" for i in range(AGENT_MAX_STEPS - 1)}
+
+
+# ---------------------------------------------------------------------------
 # Behavior 6: Error path
 # ---------------------------------------------------------------------------
 

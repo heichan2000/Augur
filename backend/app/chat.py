@@ -11,13 +11,12 @@ successfully, and only the messages new to this turn. On any error during
 the turn, nothing is persisted.
 
 Stored history is therefore always a valid, replayable Anthropic message
-sequence. Two rules keep it so: messages with empty ``content`` are
-skipped, and the new messages pass through
-``conversation.replayable_prefix`` first — so a turn that ends
-mid-tool-round (``run_turn`` hitting its ``max_steps`` bound while the
-model is still requesting tools) drops its unanswered assistant
-``tool_use`` message rather than persisting a history we could not
-replay.
+sequence: the turn's new messages pass through
+``conversation.persistable_messages`` first, which drops any tool call
+left unanswered — as when ``run_turn`` hits its ``max_steps`` bound while
+the model is still requesting tools — along with any message left empty.
+An answer streamed alongside such a call survives; only the call itself
+is dropped.
 
 Atomicity note: the persistence loop below assumes ``store.append`` cannot
 fail, which holds for the Phase-1 in-memory store. A persistent (Phase-2)
@@ -30,7 +29,7 @@ from __future__ import annotations
 from typing import Any, AsyncIterator
 
 from app.agent import run_turn
-from app.conversation import ConversationStore, Message, replayable_prefix
+from app.conversation import ConversationStore, Message, persistable_messages
 from app.observability import log_turn_error, log_turn_usage
 from app.provider import (
     ProviderError,
@@ -106,9 +105,7 @@ async def stream_chat(
         yield format_sse(ErrorEvent(type="internal", message="An internal error occurred."))
         return
 
-    for new_message in replayable_prefix(messages[len(history):]):
-        if new_message["content"] == []:
-            continue
+    for new_message in persistable_messages(messages[len(history):]):
         await store.append(session_id, new_message)
 
     if final_turn is not None:

@@ -7,13 +7,13 @@ The interface is async by design so Phase 2+ can swap in a persistent
 (e.g. Postgres) store whose operations are genuinely async; call sites
 already use ``await`` and require no changes on that swap.
 
-``replayable_prefix`` is the single guard a persistence path runs its
+``persistable_messages`` is the single guard a persistence path runs its
 messages through, so a turn can never leave stored history in a state we
 could not replay to the model.
 
 Phase 1 limitations (future concerns, not implemented here):
 - No locking/concurrency primitives — safe only for single-process in-memory use.
-- No message validation beyond ``replayable_prefix`` — callers are otherwise
+- No message validation beyond ``persistable_messages`` — callers are otherwise
   trusted to supply well-formed dicts.
 - No history truncation/windowing — unbounded growth per session.
 - Shallow copy returned by get_history — message dicts themselves are shared
@@ -43,15 +43,6 @@ def _content_blocks(message: Message, block_type: str) -> list[dict[str, Any]]:
     ]
 
 
-def _tool_use_ids(message: Message) -> set[str | None]:
-    """Return the ids of the tool calls *message* requests.
-
-    A ``tool_use`` block with no ``id`` yields ``None``, which no
-    ``tool_result`` can answer — a call we cannot match is a dangling one.
-    """
-    return {block.get("id") for block in _content_blocks(message, "tool_use")}
-
-
 def _tool_result_ids(message: Message) -> set[str | None]:
     """Return the ids of the tool calls *message* answers."""
     return {
@@ -61,27 +52,59 @@ def _tool_result_ids(message: Message) -> set[str | None]:
     }
 
 
-def replayable_prefix(messages: list[Message]) -> list[Message]:
-    """Return the longest prefix of *messages* that is safe to persist.
+def _is_unanswered_call(block: Any, answered: set[str | None]) -> bool:
+    """Is *block* a tool call that *answered* does not cover?
 
-    A stored history is replayable only if every assistant ``tool_use``
-    block is answered by a ``tool_result`` in the message that follows it.
-    An assistant message whose tool calls go unanswered — as happens when
-    the agent loop hits its step bound mid-tool-round — is dropped along
-    with everything after it. A sequence with no unanswered tool call is
-    returned unchanged.
+    A ``tool_use`` block with no ``id`` counts as unanswered — a call we
+    cannot match to a result is one we cannot replay.
     """
+    if not isinstance(block, dict) or block.get("type") != "tool_use":
+        return False
+    return block.get("id") not in answered
+
+
+def _without_unanswered_calls(message: Message, answered: set[str | None]) -> Message | None:
+    """Return *message* stripped of the tool calls *answered* leaves open.
+
+    Returns the message untouched when every call it makes is answered, a
+    copy carrying only the surviving blocks when some are not, and ``None``
+    when no content survives at all. Never mutates the message passed in —
+    stored history and the caller's working list share these dicts.
+    """
+    content = message.get("content")
+    if not isinstance(content, list):
+        return message if content else None
+
+    kept = [block for block in content if not _is_unanswered_call(block, answered)]
+    if not kept:
+        return None
+    if len(kept) == len(content):
+        return message
+    return {**message, "content": kept}
+
+
+def persistable_messages(messages: list[Message]) -> list[Message]:
+    """Return the part of *messages* that is safe to persist.
+
+    Stored history is replayable only if every ``tool_use`` block is
+    answered by a ``tool_result`` in the message that follows it. A call
+    left open — as when the agent loop hits its step bound mid-round, or a
+    turn is cut short while a tool is still running — is dropped.
+
+    Only the call is dropped, not the turn: an assistant message that
+    streamed an answer alongside an unanswerable call keeps that answer,
+    because the user read it and the model should be able to recall it. A
+    message left with no content at all is dropped entirely, and a sequence
+    with no unanswered call is returned unchanged.
+    """
+    persistable: list[Message] = []
     for index, message in enumerate(messages):
-        if message.get("role") != "assistant":
-            continue
-        requested = _tool_use_ids(message)
-        if not requested:
-            continue
         following = messages[index + 1] if index + 1 < len(messages) else None
         answered = _tool_result_ids(following) if following else set()
-        if not requested <= answered:
-            return list(messages[:index])
-    return list(messages)
+        kept = _without_unanswered_calls(message, answered)
+        if kept is not None:
+            persistable.append(kept)
+    return persistable
 
 
 class ConversationStore(abc.ABC):
