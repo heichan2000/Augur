@@ -139,11 +139,15 @@ export function useChat(): UseChat {
 
   const discard = useCallback(
     (turn: AssistantTurn) => {
+      // The Edit message button is disabled while busy; this guard covers any
+      // other caller, so a turn can never vanish mid-stream.
+      if (busy) return null;
+
       const message = promptFor(state, turn.id);
       dispatch({ type: "discard", assistantTurnId: turn.id });
       return message;
     },
-    [state],
+    [busy, state],
   );
 
   return { state, sessionId, send, stop, retry, discard };

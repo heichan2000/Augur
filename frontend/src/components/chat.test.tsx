@@ -296,6 +296,45 @@ describe("failure handling", () => {
     await userEvent.click(retry);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps Edit message inert while another turn is streaming", async () => {
+    const hangingResponse = new Response(new ReadableStream<Uint8Array>({ start() {} }), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        sseResponse(`event: error\ndata: {"type":"invalid_request","message":"Too long"}\n\n`),
+      )
+      .mockResolvedValueOnce(hangingResponse);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Chat />);
+
+    // Turn 1 is rejected, offering Edit message.
+    await userEvent.type(screen.getByRole("textbox"), "a rejected question");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Edit message" })).toBeInTheDocument(),
+    );
+
+    // Turn 2 is mid-stream: the composer shows Stop.
+    await userEvent.type(screen.getByRole("textbox"), "second question");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
+
+    // Edit message is disabled: the rejected turn stays put, the composer
+    // stays locked on Stop, and no second stream starts.
+    const edit = screen.getByRole("button", { name: "Edit message" });
+    expect(edit).toBeDisabled();
+    await userEvent.click(edit);
+
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveValue("");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("stopping a turn", () => {
