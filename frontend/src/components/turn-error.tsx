@@ -1,0 +1,146 @@
+"use client";
+
+import type { TurnError as TurnErrorData } from "@/lib/chat-state";
+
+import { PRIMARY_BUTTON, SECONDARY_BUTTON } from "./button-styles";
+
+/**
+ * How each error code is presented. The three tiers are deliberate:
+ *
+ *   transient — amber. Upstream and temporary; Retry re-sends unchanged.
+ *   input     — neutral. The user must change something, so nothing is
+ *               alarming and there is no Retry, only "Edit message".
+ *   fault     — red, and the only red in the system. A real server failure.
+ *
+ * An unrecognised code (a future phase adding one) is treated as a fault so it
+ * is surfaced loudly rather than swallowed.
+ */
+const PRESENTATION: Record<string, { tier: "transient" | "input" | "fault"; title: string }> = {
+  rate_limit: { tier: "transient", title: "Provider rate limit reached" },
+  provider_error: { tier: "transient", title: "The model provider failed" },
+  invalid_request: { tier: "input", title: "That message couldn't be sent" },
+  internal: { tier: "fault", title: "Something broke on our side" },
+};
+
+/**
+ * The backend only writes a turn to conversation history once it completes
+ * (`backend/app/chat.py` returns before persisting on every failure path). So a
+ * turn that failed, was stopped, or was cut off is on screen but *not* in the
+ * model's context — a follow-up question will not see it. Saying so beats
+ * letting the transcript imply a shared history that doesn't exist.
+ */
+function UnsavedNotice() {
+  return (
+    <p className="font-mono text-[11px] leading-[1.5] text-faint">
+      not saved to the conversation — the assistant won&apos;t recall it
+    </p>
+  );
+}
+
+const TIER_STYLES = {
+  transient: {
+    card: "border-accent-edge bg-accent-wash",
+    chip: "bg-accent-chip text-accent",
+  },
+  input: {
+    card: "border-edge bg-elevated",
+    chip: "bg-edge-subtle text-secondary",
+  },
+  fault: {
+    card: "border-danger-edge bg-danger-wash",
+    chip: "bg-danger-chip text-danger",
+  },
+} as const;
+
+export function TurnError({
+  error,
+  onRetry,
+  onDiscard,
+}: {
+  error: TurnErrorData;
+  onRetry: () => void;
+  onDiscard: () => void;
+}) {
+  const { tier, title } = PRESENTATION[error.code] ?? {
+    tier: "fault" as const,
+    title: "The request failed",
+  };
+  const styles = TIER_STYLES[tier];
+
+  return (
+    <div
+      role="alert"
+      className={`flex flex-col gap-2 rounded-[10px] border px-4 py-3.5 ${styles.card}`}
+    >
+      <div className="flex flex-wrap items-center gap-2.5">
+        <span className={`rounded-[5px] px-[7px] py-0.5 font-mono text-[11px] ${styles.chip}`}>
+          {error.code}
+        </span>
+        <span className="text-[14px] font-medium text-text">{title}</span>
+      </div>
+
+      <p className="text-[13.5px] leading-[1.6] text-secondary text-pretty">{error.message}</p>
+
+      <UnsavedNotice />
+
+      <div className="mt-1 flex items-center gap-3">
+        {tier === "input" ? (
+          <button
+            type="button"
+            onClick={onDiscard}
+            className={SECONDARY_BUTTON}
+          >
+            Edit message
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onRetry}
+            className={PRIMARY_BUTTON}
+          >
+            Retry
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The stream ended with neither `done` nor an `error` — the connection
+ * dropped. The partial answer stays on screen, dimmed by the caller and
+ * explicitly labelled incomplete, rather than silently freezing.
+ */
+export function InterruptedNotice({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div
+      role="alert"
+      className="flex flex-wrap items-center gap-3 rounded-[10px] border border-edge bg-elevated px-4 py-3"
+    >
+      <span aria-hidden className="size-2 shrink-0 rounded-full bg-faint" />
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className="text-[13.5px] font-medium text-text">Connection lost mid-answer</span>
+        <span className="font-mono text-[11px] text-faint">
+          the answer above is incomplete and may not have been saved
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={onRetry}
+        className={`ml-auto ${PRIMARY_BUTTON}`}
+      >
+        Retry
+      </button>
+    </div>
+  );
+}
+
+/** The user pressed Stop. Not a failure — no alert role, no colour. */
+export function StoppedNotice() {
+  return (
+    <div className="flex items-center gap-2.5 font-mono text-[11px] text-faint">
+      <span aria-hidden className="size-2 shrink-0 rounded-full bg-faint" />
+      stopped · not saved to the conversation
+    </div>
+  );
+}

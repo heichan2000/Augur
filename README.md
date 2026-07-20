@@ -48,11 +48,22 @@ uv run pytest
 
 ```bash
 cd frontend
+cp .env.example .env.local    # AUGUR_API_URL defaults to http://localhost:8000
 npm install
 npm run dev                   # http://localhost:3000
 ```
 
-The frontend is currently a placeholder; the streaming chat UI arrives later in Phase 1.
+The browser talks only to the Next.js route at `/api/chat`, which proxies the SSE stream
+through to the FastAPI backend — so the backend needs no CORS policy and its URL stays
+server-side.
+
+Run the frontend checks with:
+
+```bash
+npm test          # Vitest
+npm run typecheck # tsc --noEmit
+npm run lint
+```
 
 ## Status
 

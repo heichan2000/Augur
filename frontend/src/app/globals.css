@@ -1,26 +1,211 @@
 @import "tailwindcss";
 
+/*
+ * Design tokens from the Augur Chat design (claude.ai/design project
+ * "Augur FastAPI Chat Interface"). Warm near-black neutrals, one amber accent.
+ * Dark is primary; light is the same tone family inverted, with the accent
+ * deepened to #A9741F so it still holds AA contrast on a light surface.
+ *
+ * Each token is declared once via light-dark(). `color-scheme: light dark`
+ * makes it follow the OS preference; the header toggle pins color-scheme to
+ * one value, which flips every token without a second palette block.
+ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light dark;
+
+  --canvas: light-dark(#efece4, #0c0b0a);
+  --surface: light-dark(#fbf9f5, #161513);
+  --raised: light-dark(#f1eee6, #1d1c19);
+  --elevated: light-dark(#f4f1ea, #1a1916);
+  --input: light-dark(#ffffff, #1d1c19);
+  --code-bg: light-dark(#f4f1ea, #100f0d);
+  --code-fg: light-dark(#444036, #c9c4b8);
+
+  --border: light-dark(#e3dfd5, #2b2a26);
+  --border-subtle: light-dark(#eae6dc, #232220);
+  --border-strong: light-dark(#d5cfc0, #3a3830);
+
+  --text: light-dark(#201e19, #edeae2);
+  --prose: light-dark(#3b382f, #d6d2c8);
+  --secondary: light-dark(#6e6960, #a9a499);
+  --faint: light-dark(#8d877a, #757064);
+
+  --accent: light-dark(#a9741f, #dfa958);
+  --accent-link: light-dark(#a9741f, #dfae63);
+  --on-accent: light-dark(#fbf9f5, #161513);
+  --ok: light-dark(#4e7a42, #86c28b);
+  --danger: light-dark(#a33f30, #e0796b);
+
+  --accent-wash: light-dark(rgb(169 116 31 / 0.07), rgb(223 169 88 / 0.06));
+  --accent-edge: light-dark(rgb(169 116 31 / 0.32), rgb(223 169 88 / 0.3));
+  --accent-chip: light-dark(rgb(169 116 31 / 0.12), rgb(223 169 88 / 0.12));
+  --danger-wash: light-dark(rgb(163 63 48 / 0.06), rgb(224 121 107 / 0.06));
+  --danger-edge: light-dark(rgb(163 63 48 / 0.3), rgb(224 121 107 / 0.32));
+  --danger-chip: light-dark(rgb(163 63 48 / 0.12), rgb(224 121 107 / 0.12));
+  --focus-ring: light-dark(rgb(169 116 31 / 0.16), rgb(223 169 88 / 0.14));
+
+  --syn-keyword: light-dark(#9a6a1c, #dfa958);
+  --syn-function: light-dark(#2e6e80, #82b8c8);
+  --syn-type: light-dark(#7a5e1e, #d8c99a);
+  --syn-number: light-dark(#96534a, #c08d8d);
+  --syn-string: light-dark(#4e7a42, #98be8c);
+  --syn-comment: light-dark(#8d877a, #6c675c);
+}
+
+/* An explicit choice wins over the OS preference, in both directions. */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-elevated: var(--elevated);
+  --color-input: var(--input);
+  --color-code-bg: var(--code-bg);
+  --color-code-fg: var(--code-fg);
+
+  --color-edge: var(--border);
+  --color-edge-subtle: var(--border-subtle);
+  --color-edge-strong: var(--border-strong);
+
+  --color-text: var(--text);
+  --color-prose: var(--prose);
+  --color-secondary: var(--secondary);
+  --color-faint: var(--faint);
+
+  --color-accent: var(--accent);
+  --color-accent-link: var(--accent-link);
+  --color-on-accent: var(--on-accent);
+  --color-ok: var(--ok);
+  --color-danger: var(--danger);
+
+  --color-accent-wash: var(--accent-wash);
+  --color-accent-edge: var(--accent-edge);
+  --color-accent-chip: var(--accent-chip);
+  --color-danger-wash: var(--danger-wash);
+  --color-danger-edge: var(--danger-edge);
+  --color-danger-chip: var(--danger-chip);
+
+  --font-sans: var(--font-plex-sans);
+  --font-mono: var(--font-jetbrains-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  background: var(--canvas);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  color: var(--text);
+  font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+::selection {
+  background: var(--accent-wash);
+}
+
+@keyframes augur-blink {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  56%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes augur-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes augur-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The live edge of a streaming answer. */
+.augur-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 1em;
+  background: var(--accent);
+  vertical-align: -2px;
+  margin-left: 1px;
+  animation: augur-blink 1.1s steps(1) infinite;
+}
+
+.augur-pulse {
+  animation: augur-pulse 1.2s ease-in-out infinite;
+}
+
+.augur-spin {
+  animation: augur-spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .augur-cursor,
+  .augur-pulse,
+  .augur-spin {
+    animation: none;
+  }
+}
+
+/*
+ * highlight.js token mapping. Only the classes the Python / JSON / shell
+ * samples in developer docs actually emit are mapped; anything else inherits
+ * --code-fg rather than falling back to a foreign theme's palette.
+ */
+.hljs-keyword,
+.hljs-built_in,
+.hljs-literal,
+.hljs-meta,
+.hljs-selector-tag {
+  color: var(--syn-keyword);
+}
+
+.hljs-title,
+.hljs-title.function_,
+.hljs-section,
+.hljs-name {
+  color: var(--syn-function);
+}
+
+.hljs-type,
+.hljs-class .hljs-title,
+.hljs-params {
+  color: var(--syn-type);
+}
+
+.hljs-number {
+  color: var(--syn-number);
+}
+
+.hljs-string,
+.hljs-attr,
+.hljs-attribute,
+.hljs-symbol,
+.hljs-addition {
+  color: var(--syn-string);
+}
+
+.hljs-comment,
+.hljs-quote,
+.hljs-deletion {
+  color: var(--syn-comment);
+  font-style: italic;
 }
