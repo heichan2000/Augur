@@ -11,6 +11,7 @@ import logging
 import pytest
 
 from app.chat import stream_chat
+from app.config import AGENT_MAX_STEPS
 from app.conversation import InMemoryConversationStore
 from app.observability import compute_cost
 from app.provider import (
@@ -266,12 +267,6 @@ async def test_empty_content_assistant_message_not_persisted():
 # ---------------------------------------------------------------------------
 
 
-# Scripting this many tool rounds is what exhausts the bound; it tracks
-# run_turn's max_steps default (app/agent.py). If that default moves, this
-# must move with it.
-_MAX_STEPS = 8
-
-
 async def test_turn_that_exhausts_step_bound_persists_valid_replay_sequence():
     # Every round requests a tool, so run_turn hits max_steps with tools
     # still pending and the last message it appends is an assistant
@@ -289,7 +284,7 @@ async def test_turn_that_exhausts_step_bound_persists_valid_replay_sequence():
                 ToolUseRequested(id=f"t{i}", name="echo", input={"round": i}),
                 TurnComplete(stop_reason="tool_use", input_tokens=1, output_tokens=1),
             ]
-            for i in range(_MAX_STEPS)
+            for i in range(AGENT_MAX_STEPS)
         ]
     )
 
@@ -314,7 +309,7 @@ async def test_turn_that_exhausts_step_bound_persists_valid_replay_sequence():
     # round's unanswered tool_use is dropped, so history ends on the
     # preceding tool_result.
     expected: list[dict] = [{"role": "user", "content": "loop forever"}]
-    for i in range(_MAX_STEPS - 1):
+    for i in range(AGENT_MAX_STEPS - 1):
         expected.append(
             {
                 "role": "assistant",
