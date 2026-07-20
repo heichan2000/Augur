@@ -2,7 +2,7 @@
 
 import type { TurnError as TurnErrorData } from "@/lib/chat-state";
 
-import { SECONDARY_BUTTON } from "./button-styles";
+import { DISABLED_BUTTON, SECONDARY_BUTTON } from "./button-styles";
 import { PrimaryButton } from "./primary-button";
 
 /**
@@ -57,13 +57,13 @@ export function TurnError({
   error,
   onRetry,
   onDiscard,
-  retryDisabled = false,
+  busy = false,
 }: {
   error: TurnErrorData;
   onRetry: () => void;
   onDiscard: () => void;
-  /** True while another turn is in flight — one stream at a time. */
-  retryDisabled?: boolean;
+  /** True while another turn is in flight — one stream at a time, so both actions go inert. */
+  busy?: boolean;
 }) {
   const { tier, title } = PRESENTATION[error.code] ?? {
     tier: "fault" as const,
@@ -92,12 +92,13 @@ export function TurnError({
           <button
             type="button"
             onClick={onDiscard}
-            className={SECONDARY_BUTTON}
+            disabled={busy}
+            className={busy ? DISABLED_BUTTON : SECONDARY_BUTTON}
           >
             Edit message
           </button>
         ) : (
-          <PrimaryButton onClick={onRetry} disabled={retryDisabled}>
+          <PrimaryButton onClick={onRetry} disabled={busy}>
             Retry
           </PrimaryButton>
         )}
@@ -113,11 +114,11 @@ export function TurnError({
  */
 export function InterruptedNotice({
   onRetry,
-  retryDisabled = false,
+  busy = false,
 }: {
   onRetry: () => void;
   /** True while another turn is in flight — one stream at a time. */
-  retryDisabled?: boolean;
+  busy?: boolean;
 }) {
   return (
     <div
@@ -131,7 +132,7 @@ export function InterruptedNotice({
           the answer above is incomplete and may not have been saved
         </span>
       </div>
-      <PrimaryButton onClick={onRetry} disabled={retryDisabled} className="ml-auto">
+      <PrimaryButton onClick={onRetry} disabled={busy} className="ml-auto">
         Retry
       </PrimaryButton>
     </div>

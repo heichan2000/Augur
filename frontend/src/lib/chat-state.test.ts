@@ -323,4 +323,24 @@ describe("discarding an invalid request", () => {
     expect(state.turns).toEqual([]);
     expect(state.status).toBe("idle");
   });
+
+  it("stays busy when discarding while another turn is streaming", () => {
+    const state = run(
+      send,
+      {
+        type: "sse",
+        assistantTurnId: "a1",
+        event: { type: "error", data: { type: "invalid_request", message: "Too long" } },
+      },
+      { type: "send", text: "Second question", userTurnId: "u2", assistantTurnId: "a2" },
+      { type: "sse", assistantTurnId: "a2", event: { type: "token", data: { text: "Second" } } },
+      { type: "discard", assistantTurnId: "a1" },
+    );
+
+    expect(state.turns).toEqual([
+      { kind: "user", id: "u2", text: "Second question" },
+      expect.objectContaining({ id: "a2", status: "streaming", text: "Second" }),
+    ]);
+    expect(state.status).toBe("busy");
+  });
 });

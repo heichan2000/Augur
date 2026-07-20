@@ -20,17 +20,10 @@ function turnWith(overrides: Partial<AssistantTurn> = {}): AssistantTurn {
   };
 }
 
-function renderTurn(turn: AssistantTurn, { retryDisabled = false } = {}) {
+function renderTurn(turn: AssistantTurn, { busy = false } = {}) {
   const onRetry = vi.fn();
   const onDiscard = vi.fn();
-  render(
-    <AssistantMessage
-      turn={turn}
-      onRetry={onRetry}
-      onDiscard={onDiscard}
-      retryDisabled={retryDisabled}
-    />,
-  );
+  render(<AssistantMessage turn={turn} onRetry={onRetry} onDiscard={onDiscard} busy={busy} />);
   return { onRetry, onDiscard };
 }
 
@@ -228,7 +221,7 @@ describe("interrupted and stopped turns", () => {
   it("disables Retry on a failed turn while another turn is in flight", async () => {
     const { onRetry } = renderTurn(
       turnWith({ status: "failed", error: { code: "rate_limit", message: "429" } }),
-      { retryDisabled: true },
+      { busy: true },
     );
 
     const retry = screen.getByRole("button", { name: "Retry" });
@@ -238,9 +231,22 @@ describe("interrupted and stopped turns", () => {
     expect(onRetry).not.toHaveBeenCalled();
   });
 
+  it("disables Edit message on a rejected turn while another turn is in flight", async () => {
+    const { onDiscard } = renderTurn(
+      turnWith({ status: "failed", error: { code: "invalid_request", message: "Too long" } }),
+      { busy: true },
+    );
+
+    const edit = screen.getByRole("button", { name: "Edit message" });
+    expect(edit).toBeDisabled();
+
+    await userEvent.click(edit);
+    expect(onDiscard).not.toHaveBeenCalled();
+  });
+
   it("disables Retry on an interrupted turn while another turn is in flight", async () => {
     const { onRetry } = renderTurn(turnWith({ status: "interrupted", text: "Half" }), {
-      retryDisabled: true,
+      busy: true,
     });
 
     expect(screen.getByRole("button", { name: "Retry" })).toBeDisabled();
