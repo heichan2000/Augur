@@ -2,7 +2,8 @@
 
 import { useEffect, useImperativeHandle, useRef, type RefObject } from "react";
 
-import { DISABLED_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from "./button-styles";
+import { SECONDARY_BUTTON } from "./button-styles";
+import { PrimaryButton } from "./primary-button";
 
 export type ComposerHandle = {
   /** Puts text back in the field and focuses it (used by "Edit message"). */
@@ -97,14 +98,9 @@ export function Composer({
             Stop
           </button>
         ) : (
-          <button
-            type="button"
-            onClick={onSubmit}
-            disabled={!canSend}
-            className={canSend ? PRIMARY_BUTTON : DISABLED_BUTTON}
-          >
+          <PrimaryButton onClick={onSubmit} disabled={!canSend}>
             Send
-          </button>
+          </PrimaryButton>
         )}
       </div>
     </div>

@@ -2,7 +2,8 @@
 
 import type { TurnError as TurnErrorData } from "@/lib/chat-state";
 
-import { DISABLED_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from "./button-styles";
+import { SECONDARY_BUTTON } from "./button-styles";
+import { PrimaryButton } from "./primary-button";
 
 /**
  * How each error code is presented. The three tiers are deliberate:
@@ -96,14 +97,9 @@ export function TurnError({
             Edit message
           </button>
         ) : (
-          <button
-            type="button"
-            onClick={onRetry}
-            disabled={retryDisabled}
-            className={retryDisabled ? DISABLED_BUTTON : PRIMARY_BUTTON}
-          >
+          <PrimaryButton onClick={onRetry} disabled={retryDisabled}>
             Retry
-          </button>
+          </PrimaryButton>
         )}
       </div>
     </div>
@@ -135,14 +131,9 @@ export function InterruptedNotice({
           the answer above is incomplete and may not have been saved
         </span>
       </div>
-      <button
-        type="button"
-        onClick={onRetry}
-        disabled={retryDisabled}
-        className={`ml-auto ${retryDisabled ? DISABLED_BUTTON : PRIMARY_BUTTON}`}
-      >
+      <PrimaryButton onClick={onRetry} disabled={retryDisabled} className="ml-auto">
         Retry
-      </button>
+      </PrimaryButton>
     </div>
   );
 }

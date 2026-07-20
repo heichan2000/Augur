@@ -7,6 +7,7 @@ import { streamChatTurn } from "./chat-client";
 import {
   chatReducer,
   initialChatState,
+  isBusy,
   promptFor,
   type AssistantTurn,
   type ChatState,
@@ -55,11 +56,12 @@ export type UseChat = {
   discard: (turn: AssistantTurn) => string | null;
 };
 
+/** The in-flight stream: its abort handle and the assistant turn it feeds. */
+type ActiveStream = { controller: AbortController; turnId: string };
+
 export function useChat(): UseChat {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
-  const abortRef = useRef<AbortController | null>(null);
-  /** The assistant turn the in-flight stream feeds — what Stop targets. */
-  const activeTurnRef = useRef<string | null>(null);
+  const activeStreamRef = useRef<ActiveStream | null>(null);
   const sessionId = useSyncExternalStore(
     sessionStore.subscribe,
     sessionStore.read,
@@ -70,13 +72,16 @@ export function useChat(): UseChat {
   useEffect(ensureSessionId, []);
 
   // Abandon any in-flight request if the view goes away.
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => () => activeStreamRef.current?.controller.abort(), []);
+
+  // Derived once so send/retry depend on the boolean, not the whole state.
+  const busy = isBusy(state);
 
   const consume = useCallback(
     async (session: string, message: string, assistantTurnId: string) => {
       const controller = new AbortController();
-      abortRef.current = controller;
-      activeTurnRef.current = assistantTurnId;
+      const stream: ActiveStream = { controller, turnId: assistantTurnId };
+      activeStreamRef.current = stream;
 
       try {
         for await (const event of streamChatTurn({
@@ -90,8 +95,7 @@ export function useChat(): UseChat {
         // not is marked interrupted.
         dispatch({ type: "stream_ended", assistantTurnId });
       } finally {
-        if (abortRef.current === controller) abortRef.current = null;
-        if (activeTurnRef.current === assistantTurnId) activeTurnRef.current = null;
+        if (activeStreamRef.current === stream) activeStreamRef.current = null;
       }
     },
     [],
@@ -100,7 +104,7 @@ export function useChat(): UseChat {
   const send = useCallback(
     (text: string) => {
       const trimmed = text.trim();
-      if (trimmed === "" || sessionId === null || state.status === "busy") return;
+      if (trimmed === "" || sessionId === null || busy) return;
 
       const assistantTurnId = crypto.randomUUID();
       dispatch({
@@ -111,26 +115,26 @@ export function useChat(): UseChat {
       });
       void consume(sessionId, trimmed, assistantTurnId);
     },
-    [consume, sessionId, state.status],
+    [busy, consume, sessionId],
   );
 
   const stop = useCallback(() => {
-    const assistantTurnId = activeTurnRef.current;
-    if (assistantTurnId === null) return;
+    const stream = activeStreamRef.current;
+    if (stream === null) return;
 
-    abortRef.current?.abort();
-    dispatch({ type: "stopped", assistantTurnId });
+    stream.controller.abort();
+    dispatch({ type: "stopped", assistantTurnId: stream.turnId });
   }, []);
 
   const retry = useCallback(
     (turn: AssistantTurn) => {
       const message = promptFor(state, turn.id);
-      if (message === null || sessionId === null || state.status === "busy") return;
+      if (message === null || sessionId === null || busy) return;
 
       dispatch({ type: "retry", assistantTurnId: turn.id });
       void consume(sessionId, message, turn.id);
     },
-    [consume, sessionId, state],
+    [busy, consume, sessionId, state],
   );
 
   const discard = useCallback(
