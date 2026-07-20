@@ -24,10 +24,13 @@ export function AssistantMessage({
   turn,
   onRetry,
   onDiscard,
+  retryDisabled = false,
 }: {
   turn: AssistantTurn;
   onRetry: () => void;
   onDiscard: () => void;
+  /** True while another turn is in flight — retrying now would race it. */
+  retryDisabled?: boolean;
 }) {
   const isStreaming = turn.status === "streaming";
   const isIncomplete = turn.status === "interrupted" || turn.status === "stopped";
@@ -67,10 +70,17 @@ export function AssistantMessage({
       )}
 
       {turn.status === "failed" && turn.error !== null && (
-        <TurnError error={turn.error} onRetry={onRetry} onDiscard={onDiscard} />
+        <TurnError
+          error={turn.error}
+          onRetry={onRetry}
+          onDiscard={onDiscard}
+          retryDisabled={retryDisabled}
+        />
       )}
 
-      {turn.status === "interrupted" && <InterruptedNotice onRetry={onRetry} />}
+      {turn.status === "interrupted" && (
+        <InterruptedNotice onRetry={onRetry} retryDisabled={retryDisabled} />
+      )}
 
       {turn.status === "stopped" && <StoppedNotice />}
     </div>

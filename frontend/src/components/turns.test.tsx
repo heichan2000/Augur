@@ -20,10 +20,17 @@ function turnWith(overrides: Partial<AssistantTurn> = {}): AssistantTurn {
   };
 }
 
-function renderTurn(turn: AssistantTurn) {
+function renderTurn(turn: AssistantTurn, { retryDisabled = false } = {}) {
   const onRetry = vi.fn();
   const onDiscard = vi.fn();
-  render(<AssistantMessage turn={turn} onRetry={onRetry} onDiscard={onDiscard} />);
+  render(
+    <AssistantMessage
+      turn={turn}
+      onRetry={onRetry}
+      onDiscard={onDiscard}
+      retryDisabled={retryDisabled}
+    />,
+  );
   return { onRetry, onDiscard };
 }
 
@@ -216,6 +223,29 @@ describe("interrupted and stopped turns", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("disables Retry on a failed turn while another turn is in flight", async () => {
+    const { onRetry } = renderTurn(
+      turnWith({ status: "failed", error: { code: "rate_limit", message: "429" } }),
+      { retryDisabled: true },
+    );
+
+    const retry = screen.getByRole("button", { name: "Retry" });
+    expect(retry).toBeDisabled();
+
+    await userEvent.click(retry);
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it("disables Retry on an interrupted turn while another turn is in flight", async () => {
+    const { onRetry } = renderTurn(turnWith({ status: "interrupted", text: "Half" }), {
+      retryDisabled: true,
+    });
+
+    expect(screen.getByRole("button", { name: "Retry" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).not.toHaveBeenCalled();
   });
 
   it("presents a stopped turn without an alert", () => {

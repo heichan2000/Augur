@@ -47,8 +47,8 @@ describe("send", () => {
   it("keeps earlier turns when sending a follow-up", () => {
     const state = run(
       send,
-      { type: "sse", event: { type: "token", data: { text: "Use Depends." } } },
-      { type: "sse", event: { type: "done", data: {} } },
+      { type: "sse", assistantTurnId: "a1", event: { type: "token", data: { text: "Use Depends." } } },
+      { type: "sse", assistantTurnId: "a1", event: { type: "done", data: {} } },
       { type: "send", text: "And sub-dependencies?", userTurnId: "u2", assistantTurnId: "a2" },
     );
 
@@ -60,7 +60,7 @@ describe("send", () => {
 
 describe("token events", () => {
   it("moves the turn to streaming on the first token", () => {
-    const state = run(send, { type: "sse", event: { type: "token", data: { text: "Fast" } } });
+    const state = run(send, { type: "sse", assistantTurnId: "a1", event: { type: "token", data: { text: "Fast" } } });
 
     expect(assistant(state)).toMatchObject({ status: "streaming", text: "Fast" });
   });
@@ -68,9 +68,9 @@ describe("token events", () => {
   it("accumulates token text in arrival order", () => {
     const state = run(
       send,
-      { type: "sse", event: { type: "token", data: { text: "Fast" } } },
-      { type: "sse", event: { type: "token", data: { text: "API " } } },
-      { type: "sse", event: { type: "token", data: { text: "resolves it." } } },
+      { type: "sse", assistantTurnId: "a1", event: { type: "token", data: { text: "Fast" } } },
+      { type: "sse", assistantTurnId: "a1", event: { type: "token", data: { text: "API " } } },
+      { type: "sse", assistantTurnId: "a1", event: { type: "token", data: { text: "resolves it." } } },
     );
 
     expect(assistant(state).text).toBe("FastAPI resolves it.");
@@ -80,6 +80,7 @@ describe("token events", () => {
 describe("tool_use events", () => {
   const toolUse = (id: string, name: string): ChatAction => ({
     type: "sse",
+    assistantTurnId: "a1",
     event: { type: "tool_use", data: { id, name, input: { query: "deps" } } },
   });
 
@@ -103,6 +104,7 @@ describe("tool_use events", () => {
   it("settles a running tool call once assistant text starts arriving", () => {
     const state = run(send, toolUse("t1", "search_docs"), {
       type: "sse",
+      assistantTurnId: "a1",
       event: { type: "token", data: { text: "Depends resolves" } },
     });
 
@@ -121,8 +123,8 @@ describe("done", () => {
   it("completes the turn and frees the composer", () => {
     const state = run(
       send,
-      { type: "sse", event: { type: "token", data: { text: "Done." } } },
-      { type: "sse", event: { type: "done", data: {} } },
+      { type: "sse", assistantTurnId: "a1", event: { type: "token", data: { text: "Done." } } },
+      { type: "sse", assistantTurnId: "a1", event: { type: "done", data: {} } },
     );
 
     expect(assistant(state)).toMatchObject({ status: "complete", text: "Done." });
@@ -132,8 +134,8 @@ describe("done", () => {
   it("settles any still-running tool call", () => {
     const state = run(
       send,
-      { type: "sse", event: { type: "tool_use", data: { id: "t1", name: "x", input: {} } } },
-      { type: "sse", event: { type: "done", data: {} } },
+      { type: "sse", assistantTurnId: "a1", event: { type: "tool_use", data: { id: "t1", name: "x", input: {} } } },
+      { type: "sse", assistantTurnId: "a1", event: { type: "done", data: {} } },
     );
 
     expect(assistant(state).toolCalls[0].status).toBe("done");
@@ -144,6 +146,7 @@ describe("typed errors", () => {
   it("fails the turn with the code and message from the stream", () => {
     const state = run(send, {
       type: "sse",
+      assistantTurnId: "a1",
       event: { type: "error", data: { type: "rate_limit", message: "Too many requests" } },
     });
 
@@ -157,9 +160,10 @@ describe("typed errors", () => {
   it("preserves text already streamed before the error", () => {
     const state = run(
       send,
-      { type: "sse", event: { type: "token", data: { text: "Partial answer" } } },
+      { type: "sse", assistantTurnId: "a1", event: { type: "token", data: { text: "Partial answer" } } },
       {
         type: "sse",
+        assistantTurnId: "a1",
         event: { type: "error", data: { type: "internal", message: "Boom" } },
       },
     );
@@ -170,6 +174,7 @@ describe("typed errors", () => {
   it("keeps an unrecognised error code rather than discarding the failure", () => {
     const state = run(send, {
       type: "sse",
+      assistantTurnId: "a1",
       event: { type: "error", data: { type: "quota_exceeded", message: "New code" } },
     });
 
@@ -181,8 +186,8 @@ describe("stream ending without done", () => {
   it("marks a dropped connection as interrupted and keeps the partial text", () => {
     const state = run(
       send,
-      { type: "sse", event: { type: "token", data: { text: "Half an ans" } } },
-      { type: "stream_ended" },
+      { type: "sse", assistantTurnId: "a1", event: { type: "token", data: { text: "Half an ans" } } },
+      { type: "stream_ended", assistantTurnId: "a1" },
     );
 
     expect(assistant(state)).toMatchObject({ status: "interrupted", text: "Half an ans" });
@@ -192,9 +197,9 @@ describe("stream ending without done", () => {
   it("leaves a completed turn untouched", () => {
     const state = run(
       send,
-      { type: "sse", event: { type: "token", data: { text: "All of it" } } },
-      { type: "sse", event: { type: "done", data: {} } },
-      { type: "stream_ended" },
+      { type: "sse", assistantTurnId: "a1", event: { type: "token", data: { text: "All of it" } } },
+      { type: "sse", assistantTurnId: "a1", event: { type: "done", data: {} } },
+      { type: "stream_ended", assistantTurnId: "a1" },
     );
 
     expect(assistant(state).status).toBe("complete");
@@ -205,9 +210,10 @@ describe("stream ending without done", () => {
       send,
       {
         type: "sse",
+        assistantTurnId: "a1",
         event: { type: "error", data: { type: "provider_error", message: "Upstream" } },
       },
-      { type: "stream_ended" },
+      { type: "stream_ended", assistantTurnId: "a1" },
     );
 
     expect(assistant(state)).toMatchObject({
@@ -217,12 +223,44 @@ describe("stream ending without done", () => {
   });
 });
 
+describe("stream isolation", () => {
+  it("ignores an event naming a closed turn even while another turn is open", () => {
+    const state = run(
+      send,
+      {
+        type: "sse",
+        assistantTurnId: "a1",
+        event: { type: "error", data: { type: "internal", message: "Boom" } },
+      },
+      { type: "send", text: "Second question", userTurnId: "u2", assistantTurnId: "a2" },
+      { type: "sse", assistantTurnId: "a1", event: { type: "token", data: { text: "late" } } },
+    );
+
+    expect(state.turns[1]).toMatchObject({ id: "a1", status: "failed", text: "" });
+    expect(state.turns[3]).toMatchObject({ id: "a2", status: "awaiting" });
+    expect(state.status).toBe("busy");
+  });
+
+  it("keeps the composer locked when a stale stream ending names an already-closed turn", () => {
+    const state = run(
+      send,
+      { type: "stopped", assistantTurnId: "a1" },
+      { type: "send", text: "Second question", userTurnId: "u2", assistantTurnId: "a2" },
+      { type: "stream_ended", assistantTurnId: "a1" },
+    );
+
+    expect(state.turns[1]).toMatchObject({ id: "a1", status: "stopped" });
+    expect(state.turns[3]).toMatchObject({ id: "a2", status: "awaiting" });
+    expect(state.status).toBe("busy");
+  });
+});
+
 describe("stop", () => {
   it("marks the turn stopped and keeps what had streamed", () => {
     const state = run(
       send,
-      { type: "sse", event: { type: "token", data: { text: "Enough" } } },
-      { type: "stopped" },
+      { type: "sse", assistantTurnId: "a1", event: { type: "token", data: { text: "Enough" } } },
+      { type: "stopped", assistantTurnId: "a1" },
     );
 
     expect(assistant(state)).toMatchObject({ status: "stopped", text: "Enough" });
@@ -231,11 +269,32 @@ describe("stop", () => {
 });
 
 describe("retry", () => {
+  it("streams a retried turn's events into that turn even when it is not the last", () => {
+    const state = run(
+      send,
+      {
+        type: "sse",
+        assistantTurnId: "a1",
+        event: { type: "error", data: { type: "rate_limit", message: "429" } },
+      },
+      { type: "send", text: "Second question", userTurnId: "u2", assistantTurnId: "a2" },
+      { type: "sse", assistantTurnId: "a2", event: { type: "token", data: { text: "Second answer." } } },
+      { type: "sse", assistantTurnId: "a2", event: { type: "done", data: {} } },
+      { type: "retry", assistantTurnId: "a1" },
+      { type: "sse", assistantTurnId: "a1", event: { type: "token", data: { text: "Recovered." } } },
+      { type: "sse", assistantTurnId: "a1", event: { type: "done", data: {} } },
+    );
+
+    expect(state.turns[1]).toMatchObject({ id: "a1", status: "complete", text: "Recovered." });
+    expect(state.turns[3]).toMatchObject({ id: "a2", status: "complete", text: "Second answer." });
+    expect(state.status).toBe("idle");
+  });
+
   it("resets a failed turn to awaiting and clears the error", () => {
     const state = run(
       send,
-      { type: "sse", event: { type: "token", data: { text: "half" } } },
-      { type: "sse", event: { type: "error", data: { type: "rate_limit", message: "429" } } },
+      { type: "sse", assistantTurnId: "a1", event: { type: "token", data: { text: "half" } } },
+      { type: "sse", assistantTurnId: "a1", event: { type: "error", data: { type: "rate_limit", message: "429" } } },
       { type: "retry", assistantTurnId: "a1" },
     );
 
@@ -255,6 +314,7 @@ describe("discarding an invalid request", () => {
       send,
       {
         type: "sse",
+        assistantTurnId: "a1",
         event: { type: "error", data: { type: "invalid_request", message: "Too long" } },
       },
       { type: "discard", assistantTurnId: "a1" },

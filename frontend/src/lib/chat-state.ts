@@ -64,9 +64,9 @@ export type ChatState = {
 
 export type ChatAction =
   | { type: "send"; text: string; userTurnId: string; assistantTurnId: string }
-  | { type: "sse"; event: SSEEvent }
-  | { type: "stream_ended" }
-  | { type: "stopped" }
+  | { type: "sse"; assistantTurnId: string; event: SSEEvent }
+  | { type: "stream_ended"; assistantTurnId: string }
+  | { type: "stopped"; assistantTurnId: string }
   | { type: "retry"; assistantTurnId: string }
   | { type: "discard"; assistantTurnId: string };
 
@@ -107,15 +107,19 @@ function settleToolCalls(toolCalls: ToolCall[]): ToolCall[] {
 }
 
 /**
- * Apply `update` to the open assistant turn. Events arriving after a turn has
- * closed (a late frame after `done`, or anything after the user hit Stop) are
- * ignored rather than reopening it.
+ * Apply `update` to the assistant turn the stream belongs to — every stream
+ * action names its turn, so events can never leak into a different turn.
+ * Events arriving after that turn has closed (a late frame after `done`, or
+ * anything after the user hit Stop) are ignored rather than reopening it.
  */
 function updateOpenTurn(
   state: ChatState,
+  assistantTurnId: string,
   update: (turn: AssistantTurn) => AssistantTurn,
 ): ChatState {
-  const index = state.turns.findLastIndex((turn) => turn.kind === "assistant");
+  const index = state.turns.findIndex(
+    (turn) => turn.kind === "assistant" && turn.id === assistantTurnId,
+  );
   if (index === -1) return state;
 
   const turn = state.turns[index] as AssistantTurn;
@@ -127,30 +131,34 @@ function updateOpenTurn(
 }
 
 /**
- * End the open turn: give it a terminal status, settle any tool still marked
- * running, and free the composer. Every way a turn can stop routes through here.
+ * End the named turn: give it a terminal status, settle any tool still marked
+ * running, and free the composer. Every way a turn can stop routes through
+ * here. Closing a turn that is already closed changes nothing — in particular
+ * it must not free the composer, which by then reflects some *other* turn.
  */
 function closeTurn(
   state: ChatState,
+  assistantTurnId: string,
   status: Extract<
     AssistantTurnStatus,
     "complete" | "failed" | "interrupted" | "stopped"
   >,
   error: TurnError | null = null,
 ): ChatState {
-  const next = updateOpenTurn(state, (turn) => ({
+  const next = updateOpenTurn(state, assistantTurnId, (turn) => ({
     ...turn,
     status,
     toolCalls: settleToolCalls(turn.toolCalls),
     error,
   }));
+  if (next === state) return state;
   return { ...next, status: "idle" };
 }
 
-function applyEvent(state: ChatState, event: SSEEvent): ChatState {
+function applyEvent(state: ChatState, assistantTurnId: string, event: SSEEvent): ChatState {
   switch (event.type) {
     case "token":
-      return updateOpenTurn(state, (turn) => ({
+      return updateOpenTurn(state, assistantTurnId, (turn) => ({
         ...turn,
         status: "streaming",
         text: turn.text + event.data.text,
@@ -159,7 +167,7 @@ function applyEvent(state: ChatState, event: SSEEvent): ChatState {
       }));
 
     case "tool_use":
-      return updateOpenTurn(state, (turn) => ({
+      return updateOpenTurn(state, assistantTurnId, (turn) => ({
         ...turn,
         // The backend emits no tool-result event, so a tool is treated as
         // finished once the next thing arrives — the following tool_use,
@@ -176,13 +184,13 @@ function applyEvent(state: ChatState, event: SSEEvent): ChatState {
       }));
 
     case "error":
-      return closeTurn(state, "failed", {
+      return closeTurn(state, assistantTurnId, "failed", {
         code: event.data.type,
         message: event.data.message,
       });
 
     case "done":
-      return closeTurn(state, "complete");
+      return closeTurn(state, assistantTurnId, "complete");
   }
 }
 
@@ -206,15 +214,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       };
 
     case "sse":
-      return applyEvent(state, action.event);
+      return applyEvent(state, action.assistantTurnId, action.event);
 
     case "stream_ended":
       // Only meaningful if the turn never closed itself — that is a dropped
       // connection, and the partial answer stays on screen marked incomplete.
-      return closeTurn(state, "interrupted");
+      return closeTurn(state, action.assistantTurnId, "interrupted");
 
     case "stopped":
-      return closeTurn(state, "stopped");
+      return closeTurn(state, action.assistantTurnId, "stopped");
 
     case "retry": {
       const turns = state.turns.map((turn) =>

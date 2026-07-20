@@ -219,4 +219,106 @@ describe("failure handling", () => {
     );
     expect(messages).toEqual(["What time is it right now?", "What time is it right now?"]);
   });
+
+  it("streams a retried answer into the failed turn even after later turns completed", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        sseResponse(`event: error\ndata: {"type":"internal","message":"Boom"}\n\n`),
+      )
+      .mockResolvedValueOnce(sseResponse(token("Second answer."), done))
+      .mockResolvedValueOnce(sseResponse(token("Recovered answer."), done));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Chat />);
+
+    // Turn 1 fails.
+    await userEvent.click(screen.getByRole("button", { name: "What time is it right now?" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+
+    // Turn 2 completes normally.
+    await userEvent.type(screen.getByRole("textbox"), "second question");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(screen.getByText(/Second answer\./)).toBeInTheDocument());
+
+    // Retrying turn 1 streams the new answer into turn 1's slot…
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(screen.getByText(/Recovered answer\./)).toBeInTheDocument(),
+    );
+    const thread = document.body.textContent ?? "";
+    expect(thread.indexOf("Recovered answer.")).toBeLessThan(thread.indexOf("Second answer."));
+
+    // …and nothing is left thinking or locked.
+    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument(),
+    );
+
+    const messages = fetchMock.mock.calls.map(
+      ([, init]) => JSON.parse((init as RequestInit).body as string).message,
+    );
+    expect(messages).toEqual([
+      "What time is it right now?",
+      "second question",
+      "What time is it right now?",
+    ]);
+  });
+
+  it("keeps Retry inert while another turn is streaming", async () => {
+    // A stream that never ends keeps the second turn in flight.
+    const hangingResponse = new Response(new ReadableStream<Uint8Array>({ start() {} }), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        sseResponse(`event: error\ndata: {"type":"internal","message":"Boom"}\n\n`),
+      )
+      .mockResolvedValueOnce(hangingResponse);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Chat />);
+
+    // Turn 1 fails, offering Retry.
+    await userEvent.click(screen.getByRole("button", { name: "What time is it right now?" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+
+    // Turn 2 is mid-stream: the composer shows Stop.
+    await userEvent.type(screen.getByRole("textbox"), "second question");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
+
+    // Turn 1's Retry is disabled and cannot start a second stream.
+    const retry = screen.getByRole("button", { name: "Retry" });
+    expect(retry).toBeDisabled();
+    await userEvent.click(retry);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("stopping a turn", () => {
+  it("marks the streaming turn stopped and frees the composer", async () => {
+    // Emit part of an answer, then hang — the turn stays streaming until Stop.
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(token("Partial ans")));
+      },
+    });
+    mockFetchOnce(
+      new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
+    );
+
+    render(<Chat />);
+    await userEvent.click(screen.getByRole("button", { name: "What time is it right now?" }));
+    await waitFor(() => expect(screen.getByText(/Partial ans/)).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+    expect(screen.getByText(/stopped · not saved/)).toBeInTheDocument();
+    expect(screen.getByText(/Partial ans/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+  });
 });

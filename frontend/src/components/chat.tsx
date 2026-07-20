@@ -72,6 +72,7 @@ export function Chat() {
                   turn={turn}
                   onRetry={() => retry(turn)}
                   onDiscard={() => handleDiscard(turn)}
+                  retryDisabled={busy}
                 />
               ),
             )}
