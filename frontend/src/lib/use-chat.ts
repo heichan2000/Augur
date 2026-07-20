@@ -91,10 +91,18 @@ export function useChat(): UseChat {
         })) {
           dispatch({ type: "sse", assistantTurnId, event });
         }
-        // A turn that closed itself (done / error) ignores this; one that did
-        // not is marked interrupted.
-        dispatch({ type: "stream_ended", assistantTurnId });
+      } catch (error) {
+        // `streamChatTurn` turns transport and parse failures into `error`
+        // events, so a throw here is a defect it did not anticipate. The turn
+        // still ends in the `finally` below — swallowing it would only hide a
+        // bug, so it goes to the console on the way past.
+        console.error("The chat stream threw unexpectedly.", error);
       } finally {
+        // Completion, abort, and throw all land here, so no turn can be left
+        // in `awaiting` with the composer locked. A turn that closed itself
+        // (done / error / Stop) ignores this; one that did not is marked
+        // interrupted, keeping its partial answer and offering Retry.
+        dispatch({ type: "stream_ended", assistantTurnId });
         if (activeStreamRef.current === stream) activeStreamRef.current = null;
       }
     },

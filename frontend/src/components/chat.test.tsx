@@ -165,6 +165,40 @@ describe("failure handling", () => {
     expect(screen.getByText(/Half an ans/)).toBeInTheDocument();
   });
 
+  it("closes the turn when the stream throws unexpectedly", async () => {
+    // `streamChatTurn` normalises transport and parse failures into events, so
+    // reaching the caller as a throw takes a defect it does not anticipate. A
+    // response whose `body` throws on access stands in for that class of bug:
+    // whatever the cause, the turn must not be left thinking forever.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        get body(): ReadableStream<Uint8Array> {
+          throw new Error("unexpected defect");
+        },
+      }),
+    );
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    render(<Chat />);
+    await userEvent.click(screen.getByRole("button", { name: "What time is it right now?" }));
+
+    // The turn is interrupted, so Retry is offered…
+    await waitFor(() =>
+      expect(screen.getByText("Connection lost mid-answer")).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    // …and nothing is left thinking or locked.
+    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toBeEnabled();
+
+    // The defect itself is not swallowed.
+    expect(reported).toHaveBeenCalledOnce();
+    reported.mockRestore();
+  });
+
   it("reports an unreachable backend as an error", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
 
