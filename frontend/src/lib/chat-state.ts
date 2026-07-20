@@ -72,6 +72,15 @@ export type ChatAction =
 
 export const initialChatState: ChatState = { turns: [], status: "idle" };
 
+/**
+ * One stream at a time: while a turn is in flight, nothing else may start one.
+ * Every enforcement of that rule — send, retry, the Retry buttons, the locked
+ * composer — routes through this predicate.
+ */
+export function isBusy(state: ChatState): boolean {
+  return state.status === "busy";
+}
+
 /** A turn is still open to stream events only in these two states. */
 function isOpen(turn: AssistantTurn): boolean {
   return turn.status === "awaiting" || turn.status === "streaming";

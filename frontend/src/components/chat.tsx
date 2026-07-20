@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { AssistantTurn } from "@/lib/chat-state";
+import { isBusy, type AssistantTurn } from "@/lib/chat-state";
 import { useChat } from "@/lib/use-chat";
 
 import { Composer, type ComposerHandle } from "./composer";
@@ -18,7 +18,7 @@ export function Chat() {
   const [draft, setDraft] = useState("");
   const composerRef = useRef<ComposerHandle>(null);
   const threadEndRef = useRef<HTMLDivElement>(null);
-  const busy = state.status === "busy";
+  const busy = isBusy(state);
 
   // Follow the newest turn as it streams.
   useEffect(() => {
