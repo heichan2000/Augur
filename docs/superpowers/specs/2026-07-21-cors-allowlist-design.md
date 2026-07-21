@@ -27,9 +27,14 @@ default keeps the module-level `app = create_app()` and both existing endpoint t
 working unchanged, while giving CORS tests a seam that constructs a `Settings` object
 directly instead of monkeypatching env and clearing an `lru_cache`.
 
-Rejected: calling `get_settings()` inline with no parameter. It works, but it moves full
-settings validation — including the required `ANTHROPIC_API_KEY` — from lifespan startup
-to module import, since `app = create_app()` runs at import time.
+The parameter is a testing seam, not a way to defer validation. Resolving the
+`None` default is eager, so the module-level `app = create_app()` calls
+`get_settings()` at import either way — an earlier draft of this document
+claimed otherwise and was wrong. Implementation added `backend/tests/conftest.py`
+to set a dummy `ANTHROPIC_API_KEY`, without which importing `app.main` raises and
+`tests/test_health.py` and `tests/test_chat_endpoint.py` fail to collect. Failing
+at import with a clear message is more diagnostic than failing at lifespan, and
+the app cannot serve without the key regardless.
 
 ### Origins parse with `NoDecode`, not as a plain `list[str]`
 

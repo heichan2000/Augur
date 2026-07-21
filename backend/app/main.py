@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -33,6 +34,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings = get_settings()
 
     application = FastAPI(lifespan=lifespan)
+
+    # Added unconditionally, including when the allowlist is empty — one
+    # code path, and an empty list already means "permit nothing".
+    #
+    # The visible cost of that choice: a preflight to /chat now returns
+    # 400 "Disallowed CORS origin" where it used to return 405. Both
+    # refuse; the 400 says why.
+    #
+    # Nothing here is a wildcard. Credentials are off because the API has
+    # no cookie or session auth. GET is allowed alongside POST because this
+    # middleware also covers /health, and a browser status page polling it
+    # cross-origin is a plausible real use.
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allowed_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+    )
 
     @application.get("/health")
     async def health():
