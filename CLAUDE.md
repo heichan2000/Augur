@@ -13,3 +13,7 @@ Default vocabulary — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-f
 ### Domain docs
 
 Single-context — one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Doc-drift check
+
+Non-optional before any PR that touches code: grep the docs and docstrings for claims the change invalidates, and fix or file every hit. Same checkpoint as running the tests. See `docs/agents/doc-drift-check.md`.
