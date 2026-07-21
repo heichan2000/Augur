@@ -4,7 +4,7 @@ import re
 from typing import Annotated
 from urllib.parse import urlsplit
 
-from pydantic import ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # How many provider round trips one turn may make before the agent loop
@@ -154,7 +154,7 @@ class Settings(BaseSettings):
     # with stop_reason "max_tokens" and is surfaced to the user as truncated
     # (see app.provider.TRUNCATION_STOP_REASONS) rather than passed off as a
     # finished answer.
-    anthropic_max_tokens: int = 2048
+    anthropic_max_tokens: int = Field(default=2048, ge=1)
 
     # Browser origins permitted to call this API directly, as a
     # comma-separated list (``CORS_ALLOWED_ORIGINS``). Empty by default:

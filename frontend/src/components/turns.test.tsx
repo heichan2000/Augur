@@ -316,7 +316,7 @@ describe("truncated turns", () => {
   });
 
   it("shows nothing on a turn still streaming toward that stop reason", () => {
-    renderTurn(turnWith({ status: "streaming", text: "The three ", stopReason: null }));
+    renderTurn(turnWith({ status: "streaming", text: "The three ", stopReason: "max_tokens" }));
 
     expect(screen.queryByText(/cut off at the length limit/)).not.toBeInTheDocument();
   });

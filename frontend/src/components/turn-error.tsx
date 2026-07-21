@@ -26,9 +26,9 @@ const PRESENTATION: Record<string, { tier: "transient" | "input" | "fault"; titl
 /**
  * The backend only writes a turn to conversation history once it completes
  * (`backend/app/chat.py` returns before persisting on every failure path). So a
- * turn that failed, was stopped, or was cut off is on screen but *not* in the
- * model's context — a follow-up question will not see it. Saying so beats
- * letting the transcript imply a shared history that doesn't exist.
+ * turn that failed, was stopped, or was interrupted mid-stream is on screen but
+ * *not* in the model's context — a follow-up question will not see it. Saying
+ * so beats letting the transcript imply a shared history that doesn't exist.
  */
 function UnsavedNotice() {
   return (

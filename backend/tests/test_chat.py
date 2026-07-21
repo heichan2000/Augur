@@ -1074,3 +1074,37 @@ async def test_done_carries_the_terminal_stop_reason_and_the_turn_persists():
         {"role": "user", "content": "list them"},
         {"role": "assistant", "content": [{"type": "text", "text": "The three main "}]},
     ]
+
+
+async def test_truncated_turn_with_no_text_or_tool_use_yields_bare_done():
+    """The cross-module seam for the bug this branch fixes: a JSONDecodeError
+    escaping the provider generator and being caught here as an "internal"
+    error. Every other truncation test in this file (and all of
+    tests/test_provider.py) sits below this seam — inside stream_turn or
+    hand-feeding stream_chat the post-guard event stream — so none of them
+    would catch a regression if the guard moved.
+
+    This is exactly what the provider now emits for a turn truncated
+    mid-tool_use with no preceding text: a single TurnComplete and nothing
+    else — no ToolUseRequested (the half-written block was dropped) and no
+    TextDelta (none had streamed yet).
+    """
+    provider = FakeProvider(
+        [[TurnComplete(stop_reason="max_tokens", input_tokens=1, output_tokens=1)]]
+    )
+    registry = ToolRegistry()
+    store = InMemoryConversationStore()
+
+    chunks = [
+        c
+        async for c in stream_chat(
+            provider=provider, registry=registry, store=store, session_id="s1", message="list them", model="claude-sonnet-4-6"
+        )
+    ]
+
+    events = _parse_sse(chunks)
+    assert events == [("done", {"stop_reason": "max_tokens"})]
+
+    # The user's message persists; no empty assistant message is stored.
+    history = await store.get_history("s1")
+    assert history == [{"role": "user", "content": "list them"}]
