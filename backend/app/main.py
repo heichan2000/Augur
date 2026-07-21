@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.chat import stream_chat
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.conversation import get_conversation_store
 from app.observability import configure_logging
 from app.provider import get_provider
@@ -22,8 +22,15 @@ async def lifespan(app: FastAPI):
     yield
 
 
-def create_app() -> FastAPI:
+def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging()
+
+    # Resolved eagerly, so the module-level `app = create_app()` below
+    # validates configuration at import. The parameter exists so tests can
+    # construct a Settings directly instead of setting environment
+    # variables and clearing an lru_cache.
+    if settings is None:
+        settings = get_settings()
 
     application = FastAPI(lifespan=lifespan)
 
