@@ -48,6 +48,10 @@ def test_missing_key_raises_clear_error(monkeypatch):
         ("  https://app.example  ", "https://app.example"),
         ("http://localhost:3000", "http://localhost:3000"),
         ("https://app.example:8443", "https://app.example:8443"),
+        ("https://my-app.example", "https://my-app.example"),
+        ("https://[::1]:8080", "https://[::1]:8080"),
+        ("https://[2001:db8::1]", "https://[2001:db8::1]"),
+        ("https://[::1]:443", "https://[::1]"),
     ],
 )
 def test_canonicalize_normalizes(raw, expected):
@@ -69,11 +73,22 @@ def test_canonicalize_normalizes(raw, expected):
         "https://app.example:abc",  # unparseable port
         "",
         "   ",
+        "https://*",                 # bare host is "*" — never matches, and inert
+        "https://a b.example",       # embedded whitespace
+        "https://app.example..",     # trailing empty label
+        "https://.app.example",      # leading empty label
+        "https://[not-an-ipv6]",     # malformed IPv6 literal
     ],
 )
 def test_canonicalize_rejects(raw):
     with pytest.raises(ValueError):
         canonicalize_origin(raw)
+
+
+def test_canonicalize_rejects_non_ascii_host_with_punycode_suggestion():
+    with pytest.raises(ValueError) as exc_info:
+        canonicalize_origin("https://Bücher.example")
+    assert "xn--" in str(exc_info.value)
 
 
 def test_canonicalize_rejects_wildcard_with_a_pointed_message():
@@ -158,3 +173,22 @@ def test_wildcard_origin_is_rejected_at_settings_level(monkeypatch):
     with pytest.raises(RuntimeError) as exc_info:
         get_settings()
     assert "CORS_ALLOWED_ORIGINS" in str(exc_info.value)
+
+
+def test_blank_entries_are_tolerated_but_malformed_ones_are_not(monkeypatch):
+    """Pins the distinction: a trailing comma is tolerated, a typo is not.
+
+    Nothing should ever collapse "tolerate a trailing comma" into "swallow
+    a typo" — that would be the exact silent failure this module exists
+    to prevent.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://a.example,notaurl,")
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError):
+        get_settings()
+
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://a.example,,")
+    get_settings.cache_clear()
+    assert get_settings().cors_allowed_origins == ["https://a.example"]

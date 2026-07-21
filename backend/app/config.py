@@ -1,4 +1,6 @@
 import functools
+import ipaddress
+import re
 from typing import Annotated
 from urllib.parse import urlsplit
 
@@ -54,13 +56,23 @@ PERSIST_ON_STOP_TIMEOUT_SECONDS = 5.0
 # mean either scheme, and guessing wrong reproduces the silent failure.
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
+# A validated ASCII hostname's dot-separated labels, each non-empty and
+# drawn only from letters, digits, and hyphens. ``^[a-z0-9.-]+$`` alone
+# would accept "app.example.." — consecutive/leading/trailing dots produce
+# empty labels, so labels must be checked individually.
+_LABEL_RE = re.compile(r"^[a-z0-9-]+$")
+
 
 def canonicalize_origin(raw: str) -> str:
     """Return the canonical ``scheme://host[:port]`` form of one configured origin.
 
     Lowercases the scheme and host, strips a trailing slash, and drops the
     scheme's default port. Raises ``ValueError`` — never returns a guess —
-    for anything that is not a bare ``scheme://host[:port]``.
+    for anything that is not a bare ``scheme://host[:port]``, including a
+    host that Starlette's byte-for-byte comparison could never match: a
+    malformed or unbracketed IPv6 literal, a non-hostname string like
+    ``*`` or one containing whitespace, or a non-ASCII host a browser
+    would send encoded.
     """
     value = raw.strip()
 
@@ -98,6 +110,37 @@ def canonicalize_origin(raw: str) -> str:
     host = parts.hostname
     if not host:
         raise ValueError(f"{raw!r}: no host.")
+
+    if ":" in host:
+        # urlsplit strips the brackets from an IPv6 literal (and never
+        # puts them back), so an unadorned host containing ':' is always
+        # one. Validate it — a malformed literal must raise, not be
+        # echoed back — and re-bracket it for the returned origin.
+        try:
+            ipaddress.ip_address(host)
+        except ValueError as exc:
+            raise ValueError(f"{raw!r}: {host!r} is not a valid IPv6 address.") from exc
+        host = f"[{host}]"
+    elif not host.isascii():
+        # A browser only ever sends the punycode form in its Origin
+        # header, so a Unicode host here would silently never match.
+        message = (
+            "non-ASCII hosts must be written in punycode — browsers send "
+            "the encoded form."
+        )
+        try:
+            suggestion = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            raise ValueError(f"{raw!r}: {message}") from None
+        raise ValueError(f"{raw!r}: {message} Try {scheme}://{suggestion}.")
+    else:
+        labels = host.split(".")
+        if not all(label and _LABEL_RE.match(label) for label in labels):
+            raise ValueError(
+                f"{raw!r}: {host!r} is not a valid hostname — each "
+                "dot-separated label must be non-empty and contain only "
+                "letters, digits, and hyphens."
+            )
 
     if port is None or port == _DEFAULT_PORTS[scheme]:
         return f"{scheme}://{host}"

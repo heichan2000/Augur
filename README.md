@@ -54,8 +54,9 @@ npm run dev                   # http://localhost:3000
 ```
 
 The browser talks only to the Next.js route at `/api/chat`, which proxies the SSE stream
-through to the FastAPI backend — so the backend needs no CORS policy and its URL stays
-server-side.
+through to the FastAPI backend — so the backend needs no CORS configuration for this
+default setup, and its URL stays server-side. If a browser must call the API directly
+from another origin, see `CORS_ALLOWED_ORIGINS` in `backend/.env.example`.
 
 Run the frontend checks with:
 
