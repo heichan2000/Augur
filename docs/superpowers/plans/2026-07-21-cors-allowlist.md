@@ -222,7 +222,7 @@ Expected: PASS — 3 existing tests plus 22 new parametrized cases.
 
 Run: `uv run pytest -q`
 
-Expected: `100 passed` grows to `122 passed`, no failures, no new warnings.
+Expected: `88 passed` grows to `110 passed`, no failures, no new warnings.
 
 - [ ] **Step 6: Commit**
 
@@ -411,7 +411,7 @@ Expected: PASS, including the pre-existing `test_missing_key_raises_clear_error`
 
 Run: `uv run pytest -q`
 
-Expected: `129 passed`, no failures.
+Expected: `117 passed`, no failures.
 
 - [ ] **Step 6: Commit**
 
@@ -542,7 +542,7 @@ Expected: without the conftest, collection **errors** with `RuntimeError: Invali
 
 Run: `uv run pytest -q`
 
-Expected: `130 passed`, no failures.
+Expected: `118 passed`, no failures.
 
 - [ ] **Step 8: Commit**
 
@@ -810,7 +810,7 @@ the app cannot serve without the key regardless.
 
 Run: `uv run pytest -q`
 
-Expected: `145 passed`, no failures, no new warnings.
+Expected: `133 passed`, no failures, no new warnings.
 
 - [ ] **Step 8: Commit**
 
