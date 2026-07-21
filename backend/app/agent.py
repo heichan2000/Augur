@@ -7,17 +7,23 @@ the results back, and repeats until the model stops requesting tools (or
 list that the caller owns and persists.
 
 Phase scope (future concerns, not implemented here):
-- No catching of handler exceptions as model observations (Phase 3).
+- No catching of handler *exceptions* as model observations (Phase 3). An
+  unknown tool *name* is handled here, not deferred: the dispatch loop
+  checks membership before dispatching and feeds back a ``tool_result``
+  with ``is_error`` set, so one hallucinated name cannot fail the turn.
 - No `/chat` SSE endpoint or conversation-store wiring (#4).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
 from app.config import AGENT_MAX_STEPS
 from app.provider import ProviderEvent, TextDelta, ToolUseRequested, TurnComplete
 from app.tools import ToolRegistry
+
+logger = logging.getLogger("augur.agent")
 
 Message = dict[str, Any]  # Anthropic-format: {"role": ..., "content": ...}
 
@@ -113,7 +119,29 @@ async def run_turn(
             break
 
         tool_results: list[dict[str, Any]] = []
+        known = registry.names()
         for tool_use in tool_uses:
+            if tool_use.name not in known:
+                # Answer the hallucinated name as an observation rather than
+                # failing the turn: the model corrects itself from this, and
+                # every sibling call in the batch still gets its result.
+                logger.warning(
+                    "unknown tool requested",
+                    extra={"tool_name": tool_use.name},
+                )
+                available = ", ".join(known) or "(none)"
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use.id,
+                        "content": (
+                            f"Error: tool '{tool_use.name}' not found. "
+                            f"Available tools: {available}."
+                        ),
+                        "is_error": True,
+                    }
+                )
+                continue
             result = await registry.dispatch(tool_use.name, tool_use.input)
             tool_results.append(
                 {"type": "tool_result", "tool_use_id": tool_use.id, "content": result}
