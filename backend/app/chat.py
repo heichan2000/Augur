@@ -185,4 +185,4 @@ async def stream_chat(
             output_tokens=final_turn.output_tokens,
         )
 
-    yield format_sse(DoneEvent())
+    yield format_sse(DoneEvent(stop_reason=final_turn.stop_reason if final_turn else None))

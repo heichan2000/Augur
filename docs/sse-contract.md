@@ -115,17 +115,25 @@ data: {"type":"rate_limit","message":"Too many requests"}
 ### 4. `done` — End-of-stream sentinel
 
 The last event of a successful turn. The client should treat the stream as complete after
-receiving this event. The payload is always an empty JSON object.
+receiving this event.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| *(none)* | — | Empty payload |
+| `stop_reason` | `string \| null` | Why the model stopped, passed through from the provider verbatim. `null` when unknown. |
+
+**The `stop_reason` value set is open-ended.** It is whatever the upstream provider sent;
+it is not validated, mapped, or reduced to a flag anywhere in the backend. Consumers
+**MUST** treat an unrecognised value as a normal completion. Two values currently mean the
+response was cut off rather than finished, and warrant surfacing to the user:
+
+- `max_tokens` — the response hit the configured token ceiling
+- `model_context_window_exceeded` — the conversation outgrew the model's context window
 
 **Example** (exact bytes):
 
 ```
 event: done
-data: {}
+data: {"stop_reason":"end_turn"}
 
 ```
 
@@ -151,4 +159,4 @@ allowed. The following changes are **NOT** allowed:
 | `token`    | Each incremental text chunk     | `text: string`                            |
 | `tool_use` | Assistant calls a tool          | `id`, `name`, `input`                     |
 | `error`    | Unrecoverable error (final)     | `type`, `message`                         |
-| `done`     | Successful end-of-turn (final)  | *(empty)*                                 |
+| `done`     | Successful end-of-turn (final)  | `stop_reason: string \| null`             |
