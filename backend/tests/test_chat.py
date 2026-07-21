@@ -909,3 +909,139 @@ async def test_unexpected_exception_yields_internal_event():
 
     history = await store.get_history("s1")
     assert history == []
+
+
+# ---------------------------------------------------------------------------
+# Behavior: an unknown tool name completes the turn instead of erroring it
+# ---------------------------------------------------------------------------
+
+
+def _unknown_tool_provider() -> FakeProvider:
+    """Step 1 requests an unregistered tool; step 2 answers in text."""
+    return FakeProvider(
+        [
+            [
+                ToolUseRequested(id="t1", name="nonexistent", input={}),
+                TurnComplete(stop_reason="tool_use", input_tokens=5, output_tokens=4),
+            ],
+            [
+                TextDelta("I don't have that tool."),
+                TurnComplete(stop_reason="end_turn", input_tokens=6, output_tokens=2),
+            ],
+        ]
+    )
+
+
+async def test_unknown_tool_ends_in_done_with_no_error_event():
+    provider = _unknown_tool_provider()
+    registry = _make_registry()
+    store = InMemoryConversationStore()
+
+    chunks = [
+        c
+        async for c in stream_chat(
+            provider=provider,
+            registry=registry,
+            store=store,
+            session_id="s1",
+            message="use a tool",
+            model="claude-sonnet-4-6",
+        )
+    ]
+
+    events = _parse_sse(chunks)
+    assert [name for name, _ in events] == ["tool_use", "token", "done"]
+    # The tool_use event is still emitted for the unregistered tool: it is
+    # sent before dispatch, and that is accepted behaviour.
+    assert events[0] == ("tool_use", {"id": "t1", "name": "nonexistent", "input": {}})
+
+
+async def test_unknown_tool_turn_persists_the_call_and_its_error_result():
+    provider = _unknown_tool_provider()
+    registry = _make_registry()
+    store = InMemoryConversationStore()
+
+    [
+        c
+        async for c in stream_chat(
+            provider=provider,
+            registry=registry,
+            store=store,
+            session_id="s1",
+            message="use a tool",
+            model="claude-sonnet-4-6",
+        )
+    ]
+
+    history = await store.get_history("s1")
+
+    # The assistant message carrying the unknown tool_use survives
+    # persistable_messages because it now has a matching tool_result.
+    assert len(history) == 4
+    assert history[0] == {"role": "user", "content": "use a tool"}
+    assert history[1]["content"] == [
+        {"type": "tool_use", "id": "t1", "name": "nonexistent", "input": {}}
+    ]
+    assert history[2]["content"] == [
+        {
+            "type": "tool_result",
+            "tool_use_id": "t1",
+            "content": "Error: tool 'nonexistent' not found. Available tools: echo.",
+            "is_error": True,
+        }
+    ]
+    assert history[3]["content"] == [
+        {"type": "text", "text": "I don't have that tool."}
+    ]
+
+
+async def test_unknown_tool_logs_one_structured_warning(caplog):
+    provider = _unknown_tool_provider()
+    registry = _make_registry()
+    store = InMemoryConversationStore()
+
+    with caplog.at_level(logging.WARNING, logger="augur.agent"):
+        [
+            c
+            async for c in stream_chat(
+                provider=provider,
+                registry=registry,
+                store=store,
+                session_id="s1",
+                message="use a tool",
+                model="claude-sonnet-4-6",
+            )
+        ]
+
+    records = [r for r in caplog.records if r.name == "augur.agent"]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].msg == "unknown tool requested"
+    assert records[0].tool_name == "nonexistent"
+
+
+async def test_unknown_tool_logs_usage_as_a_completed_turn_not_an_error(caplog):
+    provider = _unknown_tool_provider()
+    registry = _make_registry()
+    store = InMemoryConversationStore()
+
+    with caplog.at_level(logging.INFO, logger="augur.observability"):
+        [
+            c
+            async for c in stream_chat(
+                provider=provider,
+                registry=registry,
+                store=store,
+                session_id="s1",
+                message="use a tool",
+                model="claude-sonnet-4-6",
+            )
+        ]
+
+    records = [r for r in caplog.records if r.name == "augur.observability"]
+    assert len(records) == 1
+    # log_turn_usage, not log_turn_error — the turn did not fail.
+    assert records[0].msg == "turn usage"
+    assert not hasattr(records[0], "error_type")
+    assert records[0].input_tokens == 11
+    assert records[0].output_tokens == 6

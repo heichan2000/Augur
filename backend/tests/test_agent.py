@@ -410,3 +410,149 @@ async def test_get_current_time_runs_end_to_end_through_the_spine():
     final = events[-1]
     assert isinstance(final, TurnComplete)
     assert final.stop_reason == "end_turn"
+
+
+# ---------------------------------------------------------------------------
+# Test: an unknown tool name becomes an error observation, turn continues
+# ---------------------------------------------------------------------------
+
+
+async def test_unknown_tool_yields_error_tool_result_and_turn_continues():
+    registry = _make_registry()
+    provider = FakeProvider(
+        [
+            [
+                ToolUseRequested(id="t1", name="nonexistent", input={}),
+                TurnComplete(stop_reason="tool_use", input_tokens=5, output_tokens=4),
+            ],
+            [
+                TextDelta("sorry"),
+                TurnComplete(stop_reason="end_turn", input_tokens=6, output_tokens=2),
+            ],
+        ]
+    )
+    messages = [{"role": "user", "content": "use a tool"}]
+
+    events = [
+        event
+        async for event in run_turn(provider=provider, registry=registry, messages=messages)
+    ]
+
+    # The turn ran a second step instead of blowing up.
+    assert len(provider.received_calls) == 2
+    assert events[-1] == TurnComplete(
+        stop_reason="end_turn", input_tokens=11, output_tokens=6
+    )
+    assert messages[2] == {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "t1",
+                "content": "Error: tool 'nonexistent' not found. Available tools: echo.",
+                "is_error": True,
+            }
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Test: a mixed batch answers both calls, in order, and still runs the known one
+# ---------------------------------------------------------------------------
+
+
+async def test_mixed_known_and_unknown_returns_both_results_in_order():
+    handler_inputs = []
+
+    async def handler(tool_input: dict) -> str:
+        handler_inputs.append(tool_input)
+        return "echo-result"
+
+    registry = _make_registry(handler=handler)
+    provider = FakeProvider(
+        [
+            [
+                ToolUseRequested(id="t1", name="echo", input={"v": 1}),
+                ToolUseRequested(id="t2", name="nope", input={}),
+                TurnComplete(stop_reason="tool_use", input_tokens=1, output_tokens=1),
+            ],
+            [
+                TextDelta("done"),
+                TurnComplete(stop_reason="end_turn", input_tokens=1, output_tokens=1),
+            ],
+        ]
+    )
+    messages = [{"role": "user", "content": "use both"}]
+
+    [event async for event in run_turn(provider=provider, registry=registry, messages=messages)]
+
+    # The registered tool still ran, exactly once, with its input.
+    assert handler_inputs == [{"v": 1}]
+    # Two results, in tool_uses order. Exact equality also pins the successful
+    # block's shape: no is_error key on it.
+    assert messages[2]["content"] == [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "echo-result"},
+        {
+            "type": "tool_result",
+            "tool_use_id": "t2",
+            "content": "Error: tool 'nope' not found. Available tools: echo.",
+            "is_error": True,
+        },
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Test: with nothing registered, the message reads "(none)"
+# ---------------------------------------------------------------------------
+
+
+async def test_unknown_tool_with_empty_registry_lists_none():
+    registry = ToolRegistry()
+    provider = FakeProvider(
+        [
+            [
+                ToolUseRequested(id="t1", name="nope", input={}),
+                TurnComplete(stop_reason="tool_use", input_tokens=1, output_tokens=1),
+            ],
+            [
+                TextDelta("done"),
+                TurnComplete(stop_reason="end_turn", input_tokens=1, output_tokens=1),
+            ],
+        ]
+    )
+    messages = [{"role": "user", "content": "use a tool"}]
+
+    [event async for event in run_turn(provider=provider, registry=registry, messages=messages)]
+
+    assert messages[2]["content"][0]["content"] == (
+        "Error: tool 'nope' not found. Available tools: (none)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test: a handler raising KeyError internally is NOT mistaken for unknown-tool
+# ---------------------------------------------------------------------------
+
+
+async def test_handler_raising_key_error_still_propagates():
+    async def exploding_handler(tool_input: dict) -> str:
+        raise KeyError("something the handler looked up")
+
+    registry = _make_registry(handler=exploding_handler)
+    provider = FakeProvider(
+        [
+            [
+                ToolUseRequested(id="t1", name="echo", input={}),
+                TurnComplete(stop_reason="tool_use", input_tokens=1, output_tokens=1),
+            ],
+        ]
+    )
+    messages = [{"role": "user", "content": "use the tool"}]
+
+    with pytest.raises(KeyError):
+        [
+            event
+            async for event in run_turn(
+                provider=provider, registry=registry, messages=messages
+            )
+        ]

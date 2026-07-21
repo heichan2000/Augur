@@ -144,3 +144,41 @@ async def test_get_current_time_handler_returns_parseable_utc_iso8601():
     parsed = datetime.fromisoformat(result)
     assert parsed.tzinfo is not None
     assert parsed.utcoffset() == timedelta(0)
+
+
+# ---------------------------------------------------------------------------
+# Test 9: names() returns registered names in registration order
+# ---------------------------------------------------------------------------
+
+
+async def test_names_returns_registered_names_in_order():
+    registry = ToolRegistry()
+    registry.register(_make_tool(name="first"))
+    registry.register(_make_tool(name="second"))
+    registry.register(_make_tool(name="third"))
+
+    assert registry.names() == ["first", "second", "third"]
+
+
+# ---------------------------------------------------------------------------
+# Test 10: names() returns a fresh list — mutating it does not touch the registry
+# ---------------------------------------------------------------------------
+
+
+async def test_names_returns_a_copy_the_caller_may_mutate():
+    registry = ToolRegistry()
+    registry.register(_make_tool(name="echo"))
+
+    names = registry.names()
+    names.append("injected")
+
+    assert registry.names() == ["echo"]
+
+
+# ---------------------------------------------------------------------------
+# Test 11: a fresh registry's names() is []
+# ---------------------------------------------------------------------------
+
+
+async def test_fresh_registry_names_is_empty():
+    assert ToolRegistry().names() == []

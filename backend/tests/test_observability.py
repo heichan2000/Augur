@@ -261,3 +261,24 @@ def test_formatter_does_not_leak_unwhitelisted_attributes():
         "session_id",
         "error_type",
     }
+
+
+# ---------------------------------------------------------------------------
+# Behavior 8: StructuredFormatter renders tool_name
+# ---------------------------------------------------------------------------
+
+
+def test_formatter_renders_tool_name_field():
+    formatter = StructuredFormatter()
+    record = _make_record(
+        msg="unknown tool requested",
+        level=logging.WARNING,
+        extra={"tool_name": "nonexistent"},
+    )
+
+    payload = json.loads(formatter.format(record))
+
+    assert payload["level"] == "WARNING"
+    assert payload["message"] == "unknown tool requested"
+    assert payload["tool_name"] == "nonexistent"
+    assert set(payload.keys()) == {"level", "logger", "message", "tool_name"}
