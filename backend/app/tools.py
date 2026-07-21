@@ -6,7 +6,11 @@ calls ``schemas()`` to advertise available tools to the model and
 ``dispatch()`` to run the handler the model selected.
 
 Phase scope (future concerns, not implemented here):
-- No catching of handler exceptions / error-as-observation (Phase 3).
+- No catching of handler *exceptions* as model observations (Phase 3). An
+  unknown tool *name* is a different case and is already handled: the
+  dispatch loop checks ``names()`` and answers it as an error observation,
+  so ``dispatch`` never sees one. Called directly with an unregistered
+  name it still raises KeyError.
 - No JSON-schema validation of tool_input against input_schema.
 """
 from __future__ import annotations
@@ -56,6 +60,10 @@ class ToolRegistry:
             }
             for tool in self._tools.values()
         ]
+
+    def names(self) -> list[str]:
+        """Return registered tool names in registration order."""
+        return list(self._tools)
 
     async def dispatch(self, name: str, tool_input: dict[str, Any]) -> str:
         """Await the handler registered under *name* with *tool_input*.
