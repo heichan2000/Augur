@@ -16,6 +16,7 @@ function turnWith(overrides: Partial<AssistantTurn> = {}): AssistantTurn {
     toolCalls: [],
     status: "awaiting",
     error: null,
+    stopReason: null,
     ...overrides,
   };
 }
@@ -259,5 +260,64 @@ describe("interrupted and stopped turns", () => {
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByText(/stopped/)).toBeInTheDocument();
+  });
+});
+
+describe("truncated turns", () => {
+  it("says the answer was cut off at the length limit", () => {
+    renderTurn(turnWith({ status: "complete", text: "The three main ", stopReason: "max_tokens" }));
+
+    expect(screen.getByText(/cut off at the length limit/)).toBeInTheDocument();
+  });
+
+  it("shows the same notice when the context window was exceeded", () => {
+    renderTurn(
+      turnWith({
+        status: "complete",
+        text: "The three main ",
+        stopReason: "model_context_window_exceeded",
+      }),
+    );
+
+    expect(screen.getByText(/cut off at the length limit/)).toBeInTheDocument();
+  });
+
+  it("says the truncated answer was saved, and offers no way to act on it", () => {
+    renderTurn(turnWith({ status: "complete", text: "The three main ", stopReason: "max_tokens" }));
+
+    expect(screen.getByText(/saved to the conversation/)).toBeInTheDocument();
+    expect(screen.queryByText(/not saved to the conversation/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("does not dim a truncated answer — the text is the real answer", () => {
+    renderTurn(turnWith({ status: "complete", text: "The three main ", stopReason: "max_tokens" }));
+
+    expect(screen.getByText(/The three main/).closest(".opacity-65")).toBeNull();
+  });
+
+  it("shows nothing for a turn that ended normally", () => {
+    renderTurn(turnWith({ status: "complete", text: "Done.", stopReason: "end_turn" }));
+
+    expect(screen.queryByText(/cut off at the length limit/)).not.toBeInTheDocument();
+  });
+
+  it("shows nothing when there is no stop reason", () => {
+    renderTurn(turnWith({ status: "complete", text: "Done.", stopReason: null }));
+
+    expect(screen.queryByText(/cut off at the length limit/)).not.toBeInTheDocument();
+  });
+
+  it("shows nothing for a stop reason it does not recognise", () => {
+    renderTurn(turnWith({ status: "complete", text: "Done.", stopReason: "banana" }));
+
+    expect(screen.queryByText(/cut off at the length limit/)).not.toBeInTheDocument();
+  });
+
+  it("shows nothing on a turn still streaming toward that stop reason", () => {
+    renderTurn(turnWith({ status: "streaming", text: "The three ", stopReason: null }));
+
+    expect(screen.queryByText(/cut off at the length limit/)).not.toBeInTheDocument();
   });
 });

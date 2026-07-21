@@ -148,3 +148,39 @@ export function StoppedNotice() {
     </div>
   );
 }
+
+/**
+ * The two stop reasons that mean the response was cut off rather than
+ * finished. Mirrors `TRUNCATION_STOP_REASONS` in `backend/app/provider.py`.
+ *
+ * The wire value set is open-ended (see the `done` event in
+ * docs/sse-contract.md), so this is a positive match on the two values that
+ * mean truncation, never a negative match on "not end_turn". A stop reason a
+ * future model introduces renders as an ordinary complete turn until someone
+ * decides otherwise.
+ */
+const TRUNCATION_STOP_REASONS = new Set(["max_tokens", "model_context_window_exceeded"]);
+
+export function isTruncated(stopReason: string | null): boolean {
+  return stopReason !== null && TRUNCATION_STOP_REASONS.has(stopReason);
+}
+
+/**
+ * The model ran out of room mid-answer. Shaped like `StoppedNotice` — this is
+ * not a failure and gets no colour, no alert role, and no buttons.
+ *
+ * The wording inverts the family's usual message because this is the one
+ * notice whose turn *is* saved. Retry would re-send the original prompt and
+ * leave the model seeing the same question twice; a canned "Continue" button
+ * would put a user turn in the transcript that the user never typed. A user
+ * who wants more types "continue", which works precisely because the
+ * truncated turn is already in history.
+ */
+export function TruncatedNotice() {
+  return (
+    <div className="flex items-center gap-2.5 font-mono text-[11px] text-faint">
+      <span aria-hidden className="size-2 shrink-0 rounded-full bg-faint" />
+      response cut off at the length limit · saved to the conversation
+    </div>
+  );
+}
