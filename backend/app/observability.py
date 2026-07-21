@@ -25,6 +25,7 @@ _STRUCTURED_FIELDS = (
     "output_tokens",
     "cost_usd",
     "error_type",
+    "tool_name",
 )
 
 
