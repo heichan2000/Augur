@@ -39,6 +39,7 @@ describe("send", () => {
         toolCalls: [],
         status: "awaiting",
         error: null,
+        stopReason: null,
       },
     ]);
     expect(state.status).toBe("busy");
@@ -139,6 +140,59 @@ describe("done", () => {
     );
 
     expect(assistant(state).toolCalls[0].status).toBe("done");
+  });
+
+  it("records a truncation stop reason on an otherwise complete turn", () => {
+    const state = run(
+      send,
+      { type: "sse", assistantTurnId: "a1", event: { type: "token", data: { text: "The three " } } },
+      {
+        type: "sse",
+        assistantTurnId: "a1",
+        event: { type: "done", data: { stop_reason: "max_tokens" } },
+      },
+    );
+
+    expect(assistant(state).status).toBe("complete");
+    expect(assistant(state).stopReason).toBe("max_tokens");
+  });
+
+  it("treats a done with no stop_reason field as a null stop reason", () => {
+    const state = run(send, {
+      type: "sse",
+      assistantTurnId: "a1",
+      event: { type: "done", data: {} },
+    });
+
+    expect(assistant(state).status).toBe("complete");
+    expect(assistant(state).stopReason).toBeNull();
+  });
+
+  it("closes the turn normally on a stop reason it does not recognise", () => {
+    const state = run(send, {
+      type: "sse",
+      assistantTurnId: "a1",
+      event: { type: "done", data: { stop_reason: "banana" } },
+    });
+
+    expect(assistant(state).status).toBe("complete");
+    expect(assistant(state).stopReason).toBe("banana");
+    expect(state.status).toBe("idle");
+  });
+
+  it("clears the stop reason when the turn is retried", () => {
+    const state = run(
+      send,
+      {
+        type: "sse",
+        assistantTurnId: "a1",
+        event: { type: "done", data: { stop_reason: "max_tokens" } },
+      },
+      { type: "retry", assistantTurnId: "a1" },
+    );
+
+    expect(assistant(state).stopReason).toBeNull();
+    expect(assistant(state).status).toBe("awaiting");
   });
 });
 

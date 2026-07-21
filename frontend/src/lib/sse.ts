@@ -19,6 +19,6 @@ export type SSEEvent =
   | { type: "token"; data: { text: string } }
   | { type: "tool_use"; data: { id: string; name: string; input: Record<string, unknown> } }
   | { type: "error"; data: { type: string; message: string } }
-  | { type: "done"; data: Record<string, never> };
+  | { type: "done"; data: { stop_reason?: string | null } };
 
 export const SSE_EVENT_TYPES = ["token", "tool_use", "error", "done"] as const;

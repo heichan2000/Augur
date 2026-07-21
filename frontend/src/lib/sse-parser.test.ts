@@ -137,6 +137,14 @@ describe("SSEFrameParser", () => {
       { type: "token", data: { text: "hi" } },
     ]);
   });
+
+  it("passes stop_reason through on a done frame", () => {
+    const parser = new SSEFrameParser();
+
+    const events = parser.push('event: done\ndata: {"stop_reason":"max_tokens"}\n\n');
+
+    expect(events).toEqual([{ type: "done", data: { stop_reason: "max_tokens" } }]);
+  });
 });
 
 describe("parseSSEStream", () => {
