@@ -21,6 +21,22 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # this many rounds to exercise the bound, and a second copy would drift.
 AGENT_MAX_STEPS = 8
 
+# How long a stopped turn's persistence may take before we give up on it
+# (see ``app.chat``, the client-disconnect handler).
+#
+# The write runs inside ``asyncio.shield`` because it happens while a
+# cancellation is unwinding; the shield is what stops the write itself
+# from being cancelled, and this bound is what stops the unwind from
+# hanging on a store that never returns.
+#
+# Why 5 seconds: judgement, not measurement. The Phase-1 in-memory store
+# never suspends, so this is dead weight today and exists for the Phase-2
+# persistent store. It wants to sit well above a healthy round trip to a
+# local Postgres (single-digit milliseconds) while still bounding the
+# unwind at something a shutting-down worker can absorb. Revisit with a
+# real store and real latency numbers.
+PERSIST_ON_STOP_TIMEOUT_SECONDS = 5.0
+
 
 class Settings(BaseSettings):
     anthropic_api_key: str

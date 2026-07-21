@@ -282,13 +282,14 @@ async def test_empty_content_assistant_message_not_persisted():
     events = _parse_sse(chunks)
     assert events[-1][0] == "done"
 
-    # The model returned nothing, so there is no exchange to record. This
-    # used to keep the user's message; it now goes too, under the same rule
-    # that stops a stopped-before-text turn leaving a question behind with
-    # nothing answering it. The turn still completes — only the storing of
-    # a half-exchange changed.
+    # The model returned nothing, so the assistant message is empty and is
+    # not stored — an empty assistant turn is not a message the API would
+    # accept back. The user's message stays: the turn completed, and a
+    # completed turn is not the place to second-guess whether the exchange
+    # happened. (A *stopped* turn with no answer does drop it — see
+    # test_stopping_before_any_text_persists_nothing.)
     history = await store.get_history("s1")
-    assert history == []
+    assert history == [{"role": "user", "content": "hello"}]
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +533,79 @@ async def test_stopping_while_a_tool_runs_drops_the_call_and_keeps_the_text():
     assert history == [
         {"role": "user", "content": "look it up"},
         {"role": "assistant", "content": [{"type": "text", "text": "Looking that up."}]},
+    ]
+
+
+async def test_stopped_turn_persists_through_a_store_that_suspends():
+    # The stopped path writes while a cancellation is unwinding. The
+    # Phase-1 in-memory store never suspends, so the write always finishes
+    # before anything can interrupt it — the guarantee is held by the
+    # store, not by the code. A Phase-2 store suspends on every append,
+    # and an await that suspends mid-unwind is cancelled by the *next*
+    # cancellation, silently dropping the turn. (One cancel is delivered
+    # once; it takes a second one — a shutdown timeout on top of the
+    # client hangup — to interrupt the write itself.)
+    #
+    # So: a store that really suspends, and a second cancel aimed at the
+    # window while it is suspended. Without the shield the write is lost
+    # and this test fails.
+    writing = asyncio.Event()
+
+    class SuspendingStore(InMemoryConversationStore):
+        async def append(self, session_id: str, message: dict) -> None:
+            writing.set()
+            await asyncio.sleep(0.05)  # a real await point, as a DB store has
+            await super().append(session_id, message)
+
+    dispatching = asyncio.Event()
+
+    async def handler(tool_input: dict) -> str:
+        dispatching.set()
+        await asyncio.sleep(10)  # cancelled here, mid-dispatch
+        return "never returned"
+
+    registry = _make_registry(handler=handler)
+    store = SuspendingStore()
+    provider = FakeProvider(
+        [
+            [
+                TextDelta("Partial answer."),
+                ToolUseRequested(id="t1", name="echo", input={}),
+                TurnComplete(stop_reason="tool_use", input_tokens=2, output_tokens=2),
+            ]
+        ]
+    )
+
+    async def consume() -> None:
+        async for _ in stream_chat(
+            provider=provider,
+            registry=registry,
+            store=store,
+            session_id="s1",
+            message="look it up",
+            model="claude-sonnet-4-6",
+        ):
+            pass
+
+    task = asyncio.create_task(consume())
+    await dispatching.wait()
+    task.cancel()  # the client hangs up
+
+    # Wait until the stopped-path write is actually suspended, then cancel
+    # again — this is the shutdown-timeout cancel that would kill an
+    # unshielded write.
+    await writing.wait()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    # The shielded write outlives the task, so let it finish landing.
+    await asyncio.sleep(0.2)
+
+    history = await store.get_history("s1")
+    assert history == [
+        {"role": "user", "content": "look it up"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Partial answer."}]},
     ]
 
 

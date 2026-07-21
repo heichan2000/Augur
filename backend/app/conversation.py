@@ -22,10 +22,22 @@ Phase 1 limitations (future concerns, not implemented here):
 from __future__ import annotations
 
 import abc
+import enum
 import functools
 from typing import Any
 
 Message = dict[str, Any]  # Anthropic-format: {"role": ..., "content": ...}
+
+
+class TurnOutcome(enum.Enum):
+    """How a turn ended — the input to what it is allowed to persist.
+
+    A failed turn has no member here: it persists nothing and returns
+    before reaching the persistence path at all (see ``app.chat``).
+    """
+
+    COMPLETED = enum.auto()
+    STOPPED = enum.auto()
 
 
 def _content_blocks(message: Message, block_type: str) -> list[dict[str, Any]]:
@@ -57,6 +69,20 @@ def _is_unanswered_call(block: Any, answered: set[str | None]) -> bool:
 
     A ``tool_use`` block with no ``id`` counts as unanswered — a call we
     cannot match to a result is one we cannot replay.
+
+    Why an unanswered call can never be persisted: the Anthropic API
+    requires every ``tool_use`` block to be immediately followed by a
+    matching ``tool_result``, so a dangling ``tool_use`` in stored history
+    makes the conversation unresumable — the next request fails with a
+    400 ``invalid_request_error``. Dropping the call is the only way to
+    keep history replayable.
+
+    Phase 3 could do better than dropping it: persist the call alongside a
+    synthetic ``tool_result`` marking it cancelled by the user, which
+    satisfies the pairing rule *and* leaves the model able to see that a
+    tool was started. That needs an ``is_error``/``content`` convention we
+    do not have yet (``run_turn`` builds ``tool_result`` blocks with
+    neither), so it is out of scope here.
     """
     if not isinstance(block, dict) or block.get("type") != "tool_use":
         return False
@@ -83,24 +109,35 @@ def _without_unanswered_calls(message: Message, answered: set[str | None]) -> Me
     return {**message, "content": kept}
 
 
-def persistable_messages(messages: list[Message]) -> list[Message]:
-    """Return the part of *messages* that is safe to persist.
+def persistable_messages(
+    messages: list[Message], *, outcome: TurnOutcome
+) -> list[Message]:
+    """Return the part of *messages* that is safe to persist for *outcome*.
 
-    Stored history is replayable only if every ``tool_use`` block is
-    answered by a ``tool_result`` in the message that follows it. A call
-    left open — as when the agent loop hits its step bound mid-round, or a
-    turn is cut short while a tool is still running — is dropped.
+    Two rules apply, in order.
 
-    Only the call is dropped, not the turn: an assistant message that
-    streamed an answer alongside an unanswerable call keeps that answer,
-    because the user read it and the model should be able to recall it. A
-    message left with no content at all is dropped entirely, and a sequence
-    with no unanswered call is returned unchanged.
+    **The replay rule, on every outcome.** Stored history is replayable
+    only if every ``tool_use`` block is answered by a ``tool_result`` in
+    the message that follows it. A call left open — as when the agent loop
+    hits its step bound mid-round, or a turn is cut short while a tool is
+    still running — is dropped (see ``_is_unanswered_call`` for why it
+    must be). Only the call is dropped, not the turn: an assistant message
+    that streamed an answer alongside an unanswerable call keeps that
+    answer, because the user read it and the model should be able to
+    recall it. A message left with no content at all is dropped entirely,
+    so an empty-content assistant message never reaches storage.
 
-    A turn that leaves no assistant content at all persists nothing, not
-    even the user's message. A question with nothing answering it is not
-    worth storing: it would reach the model as an exchange that never
-    happened, and re-asking would record it twice.
+    **The no-answer rule, keyed on *outcome*.** When nothing above leaves
+    any assistant content behind, the two outcomes disagree about the
+    user's message:
+
+    - ``COMPLETED`` keeps it. The turn ran its course and the model simply
+      said nothing; the exchange happened, and the user is entitled to see
+      their own message in the history of the session they are still in.
+    - ``STOPPED`` drops it. The turn never got far enough to answer, so
+      storing the question alone would record an exchange that did not
+      happen — and cost the user Retry, which is withheld once a turn is
+      persisted.
     """
     persistable: list[Message] = []
     for index, message in enumerate(messages):
@@ -110,7 +147,10 @@ def persistable_messages(messages: list[Message]) -> list[Message]:
         if kept is not None:
             persistable.append(kept)
 
-    if not any(message.get("role") == "assistant" for message in persistable):
+    answered_at_all = any(
+        message.get("role") == "assistant" for message in persistable
+    )
+    if not answered_at_all and outcome is TurnOutcome.STOPPED:
         return []
     return persistable
 

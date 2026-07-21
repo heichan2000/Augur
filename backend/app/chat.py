@@ -9,20 +9,23 @@ Persistence works on the messages new to this turn — the working
 ``messages`` list (prior history + the new user message) minus the history
 it started from. Each way a turn can end has one rule:
 
-- **Completes** — persists in full.
-- **Fails** (provider error, rate limit, internal) — persists nothing.
-  Deliberately atomic: no answer was produced, so storing the user's
-  message alone would leave a question nothing answers and make a retry
-  look like asking twice.
-- **Stopped** (the client went away) — persists the user's message and
-  whatever answer had been streamed, because the user read it.
+- **Completes** (``TurnOutcome.COMPLETED``) — persists in full, including
+  the user's message on a turn where the model said nothing.
+- **Fails** (provider error, rate limit, internal) — persists nothing, and
+  never reaches ``persistable_messages`` at all. Deliberately atomic: no
+  answer was produced, so storing the user's message alone would leave a
+  question nothing answers and make a retry look like asking twice.
+- **Stopped** (``TurnOutcome.STOPPED``, the client went away) — persists
+  the user's message and whatever answer had been streamed, because the
+  user read it. If no answer had been streamed, persists nothing.
 
-All three run the turn's new messages through
+The two persisting outcomes run the turn's new messages through
 ``conversation.persistable_messages``, which drops any tool call left
 unanswered — as when ``run_turn`` hits its ``max_steps`` bound while the
-model is still requesting tools — along with any message left empty, and
-the whole turn if no assistant content survives. An answer streamed
-alongside an unanswerable call survives; only the call is dropped.
+model is still requesting tools — along with any message left empty. An
+answer streamed alongside an unanswerable call survives; only the call is
+dropped. Where the two outcomes differ is a turn that leaves no assistant
+content at all: see that function for which keeps the user's message.
 
 Atomicity note: the persistence loop below assumes ``store.append`` cannot
 fail, which holds for the Phase-1 in-memory store. A persistent (Phase-2)
@@ -36,8 +39,14 @@ import asyncio
 from typing import Any, AsyncIterator
 
 from app.agent import TurnProgress, run_turn
-from app.conversation import ConversationStore, Message, persistable_messages
-from app.observability import log_turn_error, log_turn_usage
+from app.config import PERSIST_ON_STOP_TIMEOUT_SECONDS
+from app.conversation import (
+    ConversationStore,
+    Message,
+    TurnOutcome,
+    persistable_messages,
+)
+from app.observability import log_persist_timeout, log_turn_error, log_turn_usage
 from app.provider import (
     ProviderError,
     ProviderRateLimitError,
@@ -87,8 +96,8 @@ async def stream_chat(
     final_turn: TurnComplete | None = None
     progress = TurnProgress()
 
-    async def persist(new_messages: list[Message]) -> None:
-        for new_message in persistable_messages(new_messages):
+    async def persist(new_messages: list[Message], *, outcome: TurnOutcome) -> None:
+        for new_message in persistable_messages(new_messages, outcome=outcome):
             await store.append(session_id, new_message)
 
     try:
@@ -121,7 +130,20 @@ async def stream_chat(
             stopped.append(
                 {"role": "assistant", "content": [{"type": "text", "text": progress.partial_text}]}
             )
-        await persist(stopped)
+        # Shielded because this await runs while a cancellation unwinds.
+        # The Phase-1 in-memory store never suspends, so today the write
+        # completes before anything can interrupt it — but a Phase-2 async
+        # store introduces a real suspension point, and an await that
+        # suspends mid-unwind gets cancelled again, silently losing the
+        # write. The shield keeps the write running to completion; the
+        # timeout keeps a store that never returns from hanging the unwind.
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(persist(stopped, outcome=TurnOutcome.STOPPED)),
+                timeout=PERSIST_ON_STOP_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            log_persist_timeout(session_id=session_id, model=model)
         if progress.input_tokens or progress.output_tokens:
             log_turn_usage(
                 session_id=session_id,
@@ -153,7 +175,7 @@ async def stream_chat(
         yield format_sse(ErrorEvent(type="internal", message="An internal error occurred."))
         return
 
-    await persist(messages[len(history):])
+    await persist(messages[len(history):], outcome=TurnOutcome.COMPLETED)
 
     if final_turn is not None:
         log_turn_usage(

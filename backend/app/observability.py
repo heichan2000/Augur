@@ -133,6 +133,24 @@ def log_turn_usage(
     )
 
 
+def log_persist_timeout(*, session_id: str, model: str) -> None:
+    """Emit one structured ERROR record for a turn whose write did not land.
+
+    Reached only from the stopped path in ``app.chat``, when the shielded
+    persist does not finish inside its timeout. The turn's content is gone
+    at that point — the session id and model are what is left to identify
+    which turn was lost, so both go on the record.
+    """
+    logger.error(
+        "turn persist timeout",
+        extra={
+            "session_id": session_id,
+            "model": model,
+            "error_type": "persist_timeout",
+        },
+    )
+
+
 def log_turn_error(*, session_id: str, error_type: str) -> None:
     """Emit one structured WARNING record for a chat turn that failed.
 
