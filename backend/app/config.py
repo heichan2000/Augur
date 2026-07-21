@@ -150,6 +150,11 @@ def canonicalize_origin(raw: str) -> str:
 class Settings(BaseSettings):
     anthropic_api_key: str
     anthropic_model: str = "claude-sonnet-4-6"
+    # Ceiling on a single provider response. A turn that hits it comes back
+    # with stop_reason "max_tokens" and is surfaced to the user as truncated
+    # (see app.provider.TRUNCATION_STOP_REASONS) rather than passed off as a
+    # finished answer.
+    anthropic_max_tokens: int = 2048
 
     # Browser origins permitted to call this API directly, as a
     # comma-separated list (``CORS_ALLOWED_ORIGINS``). Empty by default:

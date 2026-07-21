@@ -192,3 +192,19 @@ def test_blank_entries_are_tolerated_but_malformed_ones_are_not(monkeypatch):
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://a.example,,")
     get_settings.cache_clear()
     assert get_settings().cors_allowed_origins == ["https://a.example"]
+
+
+def test_max_tokens_defaults_when_unset(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+    monkeypatch.delenv("ANTHROPIC_MAX_TOKENS", raising=False)
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.anthropic_max_tokens == 2048
+
+
+def test_max_tokens_overridden_by_env(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+    monkeypatch.setenv("ANTHROPIC_MAX_TOKENS", "4096")
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.anthropic_max_tokens == 4096

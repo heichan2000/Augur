@@ -62,9 +62,15 @@ class ProviderRateLimitError(ProviderError):
 
 
 class AnthropicProvider:
-    def __init__(self, client: anthropic.AsyncAnthropic, model: str) -> None:
+    def __init__(
+        self,
+        client: anthropic.AsyncAnthropic,
+        model: str,
+        max_tokens: int,
+    ) -> None:
         self._client = client
         self._model = model
+        self._max_tokens = max_tokens
 
     async def stream_turn(
         self,
@@ -72,11 +78,10 @@ class AnthropicProvider:
         messages: list[dict[str, Any]],
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
-        max_tokens: int = 2048,
     ) -> AsyncIterator[ProviderEvent]:
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": max_tokens,
+            "max_tokens": self._max_tokens,
             "messages": messages,
         }
         if system is not None:
@@ -154,7 +159,11 @@ class AnthropicProvider:
 def build_provider() -> AnthropicProvider:
     settings = get_settings()
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-    return AnthropicProvider(client=client, model=settings.anthropic_model)
+    return AnthropicProvider(
+        client=client,
+        model=settings.anthropic_model,
+        max_tokens=settings.anthropic_max_tokens,
+    )
 
 
 @functools.lru_cache(maxsize=1)

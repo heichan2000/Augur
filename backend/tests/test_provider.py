@@ -140,6 +140,16 @@ async def collect(provider, **kwargs):
     return [event async for event in provider.stream_turn(**kwargs)]
 
 
+def make_provider(client, *, max_tokens: int = 2048) -> AnthropicProvider:
+    """Build a provider over a fake client.
+
+    Centralised so the constructor can gain arguments without touching every
+    test — 2048 matches the Settings default, so tests that do not care about
+    the ceiling read as "the normal configuration".
+    """
+    return AnthropicProvider(client=client, model=MODEL, max_tokens=max_tokens)
+
+
 # ---------------------------------------------------------------------------
 # Test 1: Text streaming
 # ---------------------------------------------------------------------------
@@ -156,7 +166,7 @@ async def test_text_streaming_yields_text_deltas_and_turn_complete():
         _message_stop(),
     ]
     client = FakeClient(events)
-    provider = AnthropicProvider(client=client, model=MODEL)
+    provider = make_provider(client)
 
     results = await collect(provider, messages=[{"role": "user", "content": "hi"}])
 
@@ -183,7 +193,7 @@ async def test_tool_use_yields_tool_use_requested_and_turn_complete():
         _message_stop(),
     ]
     client = FakeClient(events)
-    provider = AnthropicProvider(client=client, model=MODEL)
+    provider = make_provider(client)
 
     results = await collect(provider, messages=[{"role": "user", "content": "what time?"}])
 
@@ -208,7 +218,7 @@ async def test_tool_use_with_no_input_json_delta_yields_empty_dict():
         _message_stop(),
     ]
     client = FakeClient(events)
-    provider = AnthropicProvider(client=client, model=MODEL)
+    provider = make_provider(client)
 
     results = await collect(provider, messages=[{"role": "user", "content": "ping"}])
 
@@ -231,7 +241,7 @@ async def test_stream_kwargs_include_model_messages_system_and_tools():
         _message_stop(),
     ]
     client = FakeClient(events)
-    provider = AnthropicProvider(client=client, model=MODEL)
+    provider = make_provider(client)
     messages = [{"role": "user", "content": "hello"}]
     tools = [{"name": "search", "description": "search", "input_schema": {"type": "object"}}]
 
@@ -257,7 +267,7 @@ async def test_stream_kwargs_omit_system_and_tools_when_not_provided():
         _message_stop(),
     ]
     client = FakeClient(events)
-    provider = AnthropicProvider(client=client, model=MODEL)
+    provider = make_provider(client)
 
     await collect(
         provider,
@@ -300,7 +310,7 @@ async def test_rate_limit_error_maps_to_provider_rate_limit_error():
     resp = httpx.Response(429, request=req)
     exc = anthropic.RateLimitError("rate limited", response=resp, body=None)
     client = FakeRaisingClient(exc)
-    provider = AnthropicProvider(client=client, model=MODEL)
+    provider = make_provider(client)
 
     with pytest.raises(ProviderRateLimitError):
         [e async for e in provider.stream_turn(messages=[{"role": "user", "content": "hi"}])]
@@ -315,7 +325,7 @@ async def test_api_connection_error_maps_to_provider_error():
     req = httpx.Request("POST", "https://api.anthropic.com")
     exc = anthropic.APIConnectionError(message="boom", request=req)
     client = FakeRaisingClient(exc)
-    provider = AnthropicProvider(client=client, model=MODEL)
+    provider = make_provider(client)
 
     with pytest.raises(ProviderError) as excinfo:
         [e async for e in provider.stream_turn(messages=[{"role": "user", "content": "hi"}])]
@@ -329,7 +339,21 @@ async def test_api_connection_error_maps_to_provider_error():
 
 async def test_non_anthropic_exception_propagates_unchanged():
     client = FakeRaisingClient(RuntimeError("bug"))
-    provider = AnthropicProvider(client=client, model=MODEL)
+    provider = make_provider(client)
 
     with pytest.raises(RuntimeError):
         [e async for e in provider.stream_turn(messages=[{"role": "user", "content": "hi"}])]
+
+
+async def test_max_tokens_from_constructor_appears_in_stream_kwargs():
+    events = [
+        _message_start(input_tokens=1),
+        _message_delta(stop_reason="end_turn", output_tokens=1),
+        _message_stop(),
+    ]
+    client = FakeClient(events)
+    provider = make_provider(client, max_tokens=4096)
+
+    await collect(provider, messages=[{"role": "user", "content": "hello"}])
+
+    assert client.messages.last_kwargs["max_tokens"] == 4096
