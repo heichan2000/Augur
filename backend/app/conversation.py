@@ -80,9 +80,10 @@ def _is_unanswered_call(block: Any, answered: set[str | None]) -> bool:
     Phase 3 could do better than dropping it: persist the call alongside a
     synthetic ``tool_result`` marking it cancelled by the user, which
     satisfies the pairing rule *and* leaves the model able to see that a
-    tool was started. That needs an ``is_error``/``content`` convention we
-    do not have yet (``run_turn`` builds ``tool_result`` blocks with
-    neither), so it is out of scope here.
+    tool was started. The ``is_error``/``content`` convention this needs
+    now exists — ``run_turn`` emits it on the unknown-tool path (#28) — but
+    a cancelled call is not an error, so a marker distinct from that
+    convention is still missing. That gap is out of scope here.
     """
     if not isinstance(block, dict) or block.get("type") != "tool_use":
         return False

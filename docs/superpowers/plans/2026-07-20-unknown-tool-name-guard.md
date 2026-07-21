@@ -687,7 +687,7 @@ Each criterion from issue #28, mapped to where it is verified.
 | `is_error: True` + exact message, names in registration order | Task 3 · `test_unknown_tool_yields_error_tool_result_and_turn_continues` |
 | Empty registry reads `Available tools: (none).` | Task 3 · `test_unknown_tool_with_empty_registry_lists_none` |
 | Mixed batch → two results in order, known handler still runs | Task 3 · `test_mixed_known_and_unknown_returns_both_results_in_order` |
-| Handler `KeyError` still fails the turn as `internal` | Task 3 · `test_handler_raising_key_error_still_propagates` |
+| Handler `KeyError` still fails the turn as `internal` | Task 3 · `test_handler_raising_key_error_still_propagates` (escapes `run_turn`) + pre-existing `test_unexpected_exception_yields_internal_event` (`stream_chat` maps it to `internal`) |
 | Successful `tool_result` byte-identical (no `is_error`) | Task 3 · `test_mixed_known_and_unknown_...` (exact dict equality) |
 | One structured WARNING with `tool_name`, surviving the formatter | Task 4 · `test_unknown_tool_logs_one_structured_warning` + Task 2 · `test_formatter_renders_tool_name_field` |
 | `log_turn_error` not called; usage logged as a completed turn | Task 4 · `test_unknown_tool_logs_usage_as_a_completed_turn_not_an_error` |

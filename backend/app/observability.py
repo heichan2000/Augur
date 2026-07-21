@@ -7,6 +7,9 @@ and pricing lookup degrades gracefully for unknown models — neither may
 crash the request that triggered it. `configure_logging` wires a minimal
 JSON-line handler onto the parent ``"augur"`` logger so these records are
 actually emitted (and readable) in a default deployment.
+
+``_STRUCTURED_FIELDS`` is a cross-module contract: it also whitelists
+``tool_name``, emitted by ``augur.agent`` rather than this module.
 """
 from __future__ import annotations
 
