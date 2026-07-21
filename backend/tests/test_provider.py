@@ -357,3 +357,104 @@ async def test_max_tokens_from_constructor_appears_in_stream_kwargs():
     await collect(provider, messages=[{"role": "user", "content": "hello"}])
 
     assert client.messages.last_kwargs["max_tokens"] == 4096
+
+
+# ---------------------------------------------------------------------------
+# Truncation: a turn cut off by the token ceiling drops its tool blocks
+# ---------------------------------------------------------------------------
+
+
+async def test_truncated_mid_input_json_drops_the_tool_block():
+    """A buffer holding half a JSON object must not raise, and must not be
+    dispatched. Before the guard this raised JSONDecodeError out of the
+    generator, which stream_chat turned into an `internal` error with no
+    `done` and nothing persisted."""
+    events = [
+        _message_start(input_tokens=9),
+        _content_block_start_tool(index=0, id="toolu_3", name="get_current_time"),
+        _input_json_delta(index=0, partial_json='{"tz":'),
+        _content_block_stop(index=0),
+        _message_delta(stop_reason="max_tokens", output_tokens=4),
+        _message_stop(),
+    ]
+    client = FakeClient(events)
+    provider = make_provider(client)
+
+    results = await collect(provider, messages=[{"role": "user", "content": "what time?"}])
+
+    assert results == [TurnComplete("max_tokens", 9, 4)]
+
+
+async def test_truncated_with_empty_tool_buffer_dispatches_nothing():
+    """Truncated before any input_json_delta arrived. An empty buffer would
+    otherwise parse to {} and dispatch a real tool with silently-empty
+    input."""
+    events = [
+        _message_start(input_tokens=8),
+        _content_block_start_tool(index=0, id="toolu_4", name="ping"),
+        _content_block_stop(index=0),
+        _message_delta(stop_reason="max_tokens", output_tokens=2),
+        _message_stop(),
+    ]
+    client = FakeClient(events)
+    provider = make_provider(client)
+
+    results = await collect(provider, messages=[{"role": "user", "content": "ping"}])
+
+    assert results == [TurnComplete("max_tokens", 8, 2)]
+
+
+async def test_context_window_exceeded_drops_the_tool_block_too():
+    events = [
+        _message_start(input_tokens=8),
+        _content_block_start_tool(index=0, id="toolu_5", name="ping"),
+        _content_block_stop(index=0),
+        _message_delta(stop_reason="model_context_window_exceeded", output_tokens=2),
+        _message_stop(),
+    ]
+    client = FakeClient(events)
+    provider = make_provider(client)
+
+    results = await collect(provider, messages=[{"role": "user", "content": "ping"}])
+
+    assert results == [TurnComplete("model_context_window_exceeded", 8, 2)]
+
+
+async def test_streamed_text_survives_a_truncated_tool_block():
+    """Text streamed before the cut-off is the real answer and must reach the
+    caller — it is what gets persisted and shown."""
+    events = [
+        _message_start(input_tokens=9),
+        _content_block_start_text(index=0),
+        _text_delta(index=0, text="Let me check"),
+        _content_block_stop(index=0),
+        _content_block_start_tool(index=1, id="toolu_6", name="get_current_time"),
+        _input_json_delta(index=1, partial_json='{"tz":'),
+        _content_block_stop(index=1),
+        _message_delta(stop_reason="max_tokens", output_tokens=4),
+        _message_stop(),
+    ]
+    client = FakeClient(events)
+    provider = make_provider(client)
+
+    results = await collect(provider, messages=[{"role": "user", "content": "what time?"}])
+
+    assert results == [TextDelta("Let me check"), TurnComplete("max_tokens", 9, 4)]
+
+
+async def test_unparseable_buffer_is_dropped_and_the_turn_completes_normally():
+    """Malformed JSON without truncation: drop the one block, keep the turn."""
+    events = [
+        _message_start(input_tokens=9),
+        _content_block_start_tool(index=0, id="toolu_7", name="get_current_time"),
+        _input_json_delta(index=0, partial_json="not json at all"),
+        _content_block_stop(index=0),
+        _message_delta(stop_reason="tool_use", output_tokens=4),
+        _message_stop(),
+    ]
+    client = FakeClient(events)
+    provider = make_provider(client)
+
+    results = await collect(provider, messages=[{"role": "user", "content": "what time?"}])
+
+    assert results == [TurnComplete("tool_use", 9, 4)]

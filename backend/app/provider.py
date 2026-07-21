@@ -7,12 +7,27 @@ from __future__ import annotations
 
 import functools
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
 import anthropic
 
 from app.config import get_settings
+
+logger = logging.getLogger("augur.provider")
+
+# Stop reasons meaning the response was cut off rather than finished. A tool
+# block that arrives on such a turn cannot be trusted — its JSON may be half
+# written, or missing entirely — so it is dropped rather than dispatched.
+#
+# The Anthropic SDK's own two enums disagree on the full value set
+# (anthropic/types/stop_reason.py lists six values and omits
+# model_context_window_exceeded; the beta variant lists eight), which is why
+# nothing else in this codebase validates stop_reason against an allow-list.
+# This frozenset is the one place a value is interpreted, and it names only
+# the two that mean "truncated".
+TRUNCATION_STOP_REASONS = frozenset({"max_tokens", "model_context_window_exceeded"})
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +112,15 @@ class AnthropicProvider:
         # Per-block tracking: index → {"id": str, "name": str, "buf": str}
         tool_blocks: dict[int, dict[str, Any]] = {}
 
+        # Parsed tool calls held back until stop_reason is known. The stream
+        # reveals stop_reason (in message_delta) only *after* every
+        # content_block_stop, so at block-close time an empty buffer is
+        # ambiguous: a zero-argument tool and a call truncated before its
+        # first input_json_delta look identical. Replaying after the loop
+        # resolves that, and keeps a dead call from reaching the UI as a
+        # tool_use SSE event that would be drawn as a row and settled "done".
+        pending_tool_uses: list[ToolUseRequested] = []
+
         try:
             async with self._client.messages.stream(**kwargs) as stream:
                 async for event in stream:
@@ -127,11 +151,24 @@ class AnthropicProvider:
                         if idx in tool_blocks:
                             block = tool_blocks.pop(idx)
                             raw = block["buf"]
-                            parsed = json.loads(raw) if raw else {}
-                            yield ToolUseRequested(
-                                id=block["id"],
-                                name=block["name"],
-                                input=parsed,
+                            try:
+                                parsed = json.loads(raw) if raw else {}
+                            except json.JSONDecodeError:
+                                # Half-written arguments. Dropping the block
+                                # loses one tool call; letting this raise
+                                # would lose the whole turn, including text
+                                # already streamed to the user.
+                                logger.warning(
+                                    "dropping tool block with unparseable input",
+                                    extra={"tool_name": block["name"]},
+                                )
+                                continue
+                            pending_tool_uses.append(
+                                ToolUseRequested(
+                                    id=block["id"],
+                                    name=block["name"],
+                                    input=parsed,
+                                )
                             )
 
                     elif etype == "message_delta":
@@ -143,6 +180,18 @@ class AnthropicProvider:
             raise ProviderRateLimitError(str(exc)) from exc
         except anthropic.APIError as exc:  # status errors + connection/network
             raise ProviderError(str(exc)) from exc
+
+        # Outside the try, alongside the TurnComplete that already lived here:
+        # a stream that raised reaches neither.
+        if stop_reason in TRUNCATION_STOP_REASONS:
+            for tool_use in pending_tool_uses:
+                logger.warning(
+                    "dropping tool block from a truncated turn",
+                    extra={"tool_name": tool_use.name},
+                )
+        else:
+            for tool_use in pending_tool_uses:
+                yield tool_use
 
         yield TurnComplete(
             stop_reason=stop_reason,
