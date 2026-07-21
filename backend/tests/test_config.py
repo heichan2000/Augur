@@ -1,5 +1,5 @@
 import pytest
-from app.config import canonicalize_origin, get_settings
+from app.config import Settings, canonicalize_origin, get_settings
 
 
 @pytest.fixture(autouse=True)
@@ -88,3 +88,73 @@ def test_canonicalize_rejects_wildcard_with_a_pointed_message():
         canonicalize_origin("*")
     assert "*" in str(exc_info.value)
     assert "every origin" in str(exc_info.value)
+
+
+def test_origins_default_to_empty_when_unset(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+    monkeypatch.delenv("CORS_ALLOWED_ORIGINS", raising=False)
+    get_settings.cache_clear()
+    assert get_settings().cors_allowed_origins == []
+
+
+def test_empty_string_yields_empty_list(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "")
+    get_settings.cache_clear()
+    assert get_settings().cors_allowed_origins == []
+
+
+def test_comma_string_splits_and_canonicalizes(monkeypatch):
+    """Stray whitespace and a trailing comma are what a real .env looks like."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+    monkeypatch.setenv(
+        "CORS_ALLOWED_ORIGINS",
+        " https://App.Example/ , http://localhost:3000 ,",
+    )
+    get_settings.cache_clear()
+    assert get_settings().cors_allowed_origins == [
+        "https://app.example",
+        "http://localhost:3000",
+    ]
+
+
+def test_duplicates_collapse_preserving_order(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+    monkeypatch.setenv(
+        "CORS_ALLOWED_ORIGINS",
+        "https://b.example,https://a.example,https://B.Example/",
+    )
+    get_settings.cache_clear()
+    assert get_settings().cors_allowed_origins == [
+        "https://b.example",
+        "https://a.example",
+    ]
+
+
+def test_settings_accepts_a_direct_list(monkeypatch):
+    """The seam Task 4's tests depend on: construct Settings without env."""
+    settings = Settings(
+        anthropic_api_key="k", cors_allowed_origins=["https://App.Example/"]
+    )
+    assert settings.cors_allowed_origins == ["https://app.example"]
+
+
+def test_invalid_origin_names_itself_not_the_api_key(monkeypatch):
+    """A bad origin must not report itself as a missing ANTHROPIC_API_KEY."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "app.example")
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError) as exc_info:
+        get_settings()
+    message = str(exc_info.value)
+    assert "CORS_ALLOWED_ORIGINS" in message
+    assert "ANTHROPIC_API_KEY" not in message
+
+
+def test_wildcard_origin_is_rejected_at_settings_level(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "*")
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError) as exc_info:
+        get_settings()
+    assert "CORS_ALLOWED_ORIGINS" in str(exc_info.value)

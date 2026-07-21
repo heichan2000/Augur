@@ -1,7 +1,9 @@
 import functools
+from typing import Annotated
 from urllib.parse import urlsplit
-from pydantic import ValidationError
-from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from pydantic import ValidationError, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # How many provider round trips one turn may make before the agent loop
 # gives up (see ``app.agent.run_turn``).
@@ -106,7 +108,38 @@ class Settings(BaseSettings):
     anthropic_api_key: str
     anthropic_model: str = "claude-sonnet-4-6"
 
+    # Browser origins permitted to call this API directly, as a
+    # comma-separated list (``CORS_ALLOWED_ORIGINS``). Empty by default:
+    # an unconfigured deployment grants no cross-origin browser access at
+    # all, and the Next.js proxy remains the documented default path.
+    #
+    # ``NoDecode`` is required. pydantic-settings JSON-decodes complex
+    # types from the environment, so a bare ``list[str]`` would raise on a
+    # comma-separated value; ``NoDecode`` hands the raw string to the
+    # validator below instead.
+    cors_allowed_origins: Annotated[list[str], NoDecode] = []
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def _canonicalize_origins(cls, value):
+        # Also runs for a directly-constructed list, which is the seam the
+        # CORS tests use to build a Settings without touching the
+        # environment — so a list gets canonicalized exactly like a string.
+        if isinstance(value, str):
+            entries = [part.strip() for part in value.split(",")]
+        else:
+            entries = list(value)
+
+        origins: list[str] = []
+        for entry in entries:
+            if not entry.strip():
+                continue  # tolerate a trailing comma and blank padding
+            origin = canonicalize_origin(entry)
+            if origin not in origins:
+                origins.append(origin)  # dedupe, preserving order
+        return origins
 
 
 @functools.lru_cache
@@ -114,7 +147,15 @@ def get_settings() -> Settings:
     try:
         return Settings()
     except ValidationError as exc:
+        # Name whichever variables actually failed. This used to say
+        # ANTHROPIC_API_KEY unconditionally, which would misreport a bad
+        # CORS_ALLOWED_ORIGINS as a missing API key and send the reader
+        # looking in the wrong place.
+        names = sorted(
+            {str(error["loc"][0]).upper() for error in exc.errors() if error["loc"]}
+        )
         raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set. "
-            "Copy backend/.env.example to backend/.env and set it."
+            f"Invalid backend configuration: {', '.join(names)}. "
+            "Copy backend/.env.example to backend/.env and check these variables.\n"
+            f"{exc}"
         ) from exc
