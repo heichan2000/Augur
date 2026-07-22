@@ -67,9 +67,18 @@ class ErrorEvent(SSEEvent):
 
 
 class DoneEvent(SSEEvent):
-    """End-of-stream sentinel; the last event of a successful turn."""
+    """End-of-stream sentinel; the last event of a successful turn.
+
+    ``stop_reason`` is the terminal step's stop reason, passed through from
+    the provider verbatim and *not* interpreted here. The value set is
+    open-ended — the Anthropic SDK's own enums disagree on it — so consumers
+    must treat an unrecognised value as a normal completion. ``None`` means
+    the turn produced no ``TurnComplete`` to read one from.
+    """
 
     event: ClassVar[str] = "done"
+
+    stop_reason: str | None = None
 
 
 def format_sse(event: SSEEvent) -> str:

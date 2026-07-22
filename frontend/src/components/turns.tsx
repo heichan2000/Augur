@@ -4,7 +4,7 @@ import type { AssistantTurn, UserTurn } from "@/lib/chat-state";
 
 import { Markdown } from "./markdown";
 import { ToolCallRow } from "./tool-call-row";
-import { InterruptedNotice, StoppedNotice, TurnError } from "./turn-error";
+import { InterruptedNotice, isTruncated, StoppedNotice, TruncatedNotice, TurnError } from "./turn-error";
 
 export function UserMessage({ turn }: { turn: UserTurn }) {
   return (
@@ -76,6 +76,8 @@ export function AssistantMessage({
       {turn.status === "interrupted" && <InterruptedNotice onRetry={onRetry} busy={busy} />}
 
       {turn.status === "stopped" && <StoppedNotice />}
+
+      {turn.status === "complete" && isTruncated(turn.stopReason) && <TruncatedNotice />}
     </div>
   );
 }

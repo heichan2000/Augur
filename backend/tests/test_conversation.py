@@ -5,7 +5,12 @@ All test functions are async (asyncio_mode = "auto" handles the event loop).
 """
 import pytest
 
-from app.conversation import ConversationStore, InMemoryConversationStore
+from app.conversation import (
+    ConversationStore,
+    InMemoryConversationStore,
+    TurnOutcome,
+    persistable_messages,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -114,3 +119,23 @@ async def test_interface_conformance():
 
     with pytest.raises(TypeError):
         ConversationStore()  # type: ignore[abstract]
+
+
+# ---------------------------------------------------------------------------
+# Test 9: an empty-content assistant message is dropped, not persisted
+# ---------------------------------------------------------------------------
+
+
+def test_persistable_messages_drops_an_empty_content_assistant_message():
+    # A truncated tool block with no preceding text (app/agent.py) leaves
+    # exactly this message reachable: {"role": "assistant", "content": []}.
+    # It must never reach storage — an empty-content assistant message is
+    # not something the Anthropic API accepts back on a later turn.
+    messages = [
+        {"role": "user", "content": "list them"},
+        {"role": "assistant", "content": []},
+    ]
+
+    result = persistable_messages(messages, outcome=TurnOutcome.COMPLETED)
+
+    assert result == [{"role": "user", "content": "list them"}]

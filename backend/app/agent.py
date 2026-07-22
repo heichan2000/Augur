@@ -12,6 +12,12 @@ Phase scope (future concerns, not implemented here):
   checks membership before dispatching and feeds back a ``tool_result``
   with ``is_error`` set, so one hallucinated name cannot fail the turn.
 - No `/chat` SSE endpoint or conversation-store wiring (#4).
+
+Truncation needs no branch here. A step cut off by the token ceiling
+arrives from the provider as a step that requested no tools — the provider
+drops tool blocks it cannot trust (see ``app.provider``) — so the loop
+appends the assistant message, breaks, and reports that step's
+``stop_reason`` as the turn's. The caller decides what to do with it.
 """
 from __future__ import annotations
 

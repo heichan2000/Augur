@@ -52,6 +52,15 @@ export type AssistantTurn = {
   toolCalls: ToolCall[];
   status: AssistantTurnStatus;
   error: TurnError | null;
+  /**
+   * Why the model stopped, verbatim from the provider — see the `done` event
+   * in docs/sse-contract.md. Deliberately *not* folded into
+   * `AssistantTurnStatus`: that vocabulary is closed and describes how the
+   * stream ended, whereas this value set is open-ended and describes what the
+   * model did. Keeping them orthogonal means a stop reason the UI has never
+   * heard of renders as an ordinary complete turn.
+   */
+  stopReason: string | null;
 };
 
 export type Turn = UserTurn | AssistantTurn;
@@ -153,12 +162,14 @@ function closeTurn(
     "complete" | "failed" | "interrupted" | "stopped"
   >,
   error: TurnError | null = null,
+  stopReason: string | null = null,
 ): ChatState {
   const next = updateOpenTurn(state, assistantTurnId, (turn) => ({
     ...turn,
     status,
     toolCalls: settleToolCalls(turn.toolCalls),
     error,
+    stopReason,
   }));
   if (next === state) return state;
   return { ...next, status: "idle" };
@@ -199,7 +210,10 @@ function applyEvent(state: ChatState, assistantTurnId: string, event: SSEEvent):
       });
 
     case "done":
-      return closeTurn(state, assistantTurnId, "complete");
+      // `?? null` collapses a missing field and an explicit null to the same
+      // thing, so an old-style `{}` payload is indistinguishable from a turn
+      // whose stop reason was unknown.
+      return closeTurn(state, assistantTurnId, "complete", null, event.data.stop_reason ?? null);
   }
 }
 
@@ -218,6 +232,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             toolCalls: [],
             status: "awaiting",
             error: null,
+            stopReason: null,
           },
         ],
       };
@@ -236,7 +251,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case "retry": {
       const turns = state.turns.map((turn) =>
         turn.kind === "assistant" && turn.id === action.assistantTurnId
-          ? { ...turn, text: "", toolCalls: [], status: "awaiting" as const, error: null }
+          ? {
+              ...turn,
+              text: "",
+              toolCalls: [],
+              status: "awaiting" as const,
+              error: null,
+              stopReason: null,
+            }
           : turn,
       );
       return { turns, status: "busy" };

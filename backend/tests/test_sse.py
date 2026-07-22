@@ -42,7 +42,13 @@ def test_error_event_exact_wire_string():
 def test_done_event_exact_wire_string():
     event = DoneEvent()
     result = format_sse(event)
-    assert result == "event: done\ndata: {}\n\n"
+    assert result == 'event: done\ndata: {"stop_reason":null}\n\n'
+
+
+def test_done_event_carries_a_stop_reason():
+    event = DoneEvent(stop_reason="max_tokens")
+    result = format_sse(event)
+    assert result == 'event: done\ndata: {"stop_reason":"max_tokens"}\n\n'
 
 
 # ---------------------------------------------------------------------------
@@ -115,13 +121,13 @@ def test_token_json_is_compact_no_spaces():
     assert json_part == '{"text":"Hi"}', f"Expected compact JSON, got: {json_part!r}"
 
 
-def test_done_json_is_empty_object():
-    """Done event must produce exactly {} — no fields."""
+def test_done_json_carries_stop_reason_and_nothing_else():
+    """Done event must produce exactly one field: stop_reason."""
     event = DoneEvent()
     result = format_sse(event)
     data_line = result.split("\n")[1]
     json_part = data_line[len("data: "):]
-    assert json_part == "{}", f"Expected {{}}, got: {json_part!r}"
+    assert json_part == '{"stop_reason":null}', f"Unexpected payload: {json_part!r}"
 
 
 def test_error_json_is_compact():

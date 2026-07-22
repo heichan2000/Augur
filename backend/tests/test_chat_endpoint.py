@@ -126,7 +126,7 @@ def test_post_chat_returns_well_formed_sse_stream(monkeypatch):
     assert response.headers["content-type"].startswith("text/event-stream")
 
     events = _parse_sse(response.text)
-    assert events == [("token", {"text": "Hi"}), ("done", {})]
+    assert events == [("token", {"text": "Hi"}), ("done", {"stop_reason": "end_turn"})]
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ def test_post_chat_tool_path_yields_tool_use_then_token_then_done(monkeypatch):
     assert events == [
         ("tool_use", {"id": "t1", "name": "echo", "input": {"v": 1}}),
         ("token", {"text": "ok"}),
-        ("done", {}),
+        ("done", {"stop_reason": "end_turn"}),
     ]
 
 
